@@ -40,14 +40,48 @@ cargo install --path .
 The language you author in must be installed when generating: Node.js 26+,
 Python 3, Go, or Cargo/Rust.
 
+## Start a project
+
+```sh
+loopt init
+```
+
+Writes a starter workflow as TypeScript source in `.loopt/workflows/ci.ts`,
+generates `.github/workflows/ci.yml` from it, and prints what to do next. The
+starter follows your project files:
+
+| Found | Steps |
+|---|---|
+| `package.json` | `npm ci` (or `npm install` without a lockfile), `npm test` |
+| `Cargo.toml` | `cargo test` |
+| `go.mod` | `go test ./...` |
+| `pyproject.toml`, `requirements.txt`, `setup.py` | `pip install`, `python -m pytest` |
+| none of these | a placeholder step to replace |
+
+Every starter uses a read-only token (`contents: read`), pins
+`actions/checkout` to a commit without persisting credentials, cancels
+superseded runs, and lints clean. Edit it freely; it is only a starting point.
+
+```sh
+loopt init --language python --name build --template node
+```
+
+`--language` is `typescript` (default), `python`, `go`, or `rust`. `--name`
+sets the file name (default `ci`). `--template` is `auto` (default),
+`generic`, `node`, `rust`, `go`, or `python`. `init` never overwrites an
+existing workflow; use `loopt import` for those.
+
 ## Use
 
 ```sh
 # Import existing workflows into .loopt/workflows
 loopt import --language typescript
 
-# Generate .github/workflows from the imported source
+# Generate .github/workflows from the source
 loopt gen
+
+# Fail if the committed YAML no longer matches the committed source
+loopt gen --check
 ```
 
 `loopt import` leaves the original YAML untouched. `loopt gen` refuses to
@@ -55,6 +89,22 @@ overwrite a workflow edited outside Loopt unless you pass `--force`.
 
 You can also write source from scratch under `.loopt/workflows/`; `loopt gen`
 discovers it and writes the matching workflow.
+
+### Keep YAML and source in sync
+
+Generated YAML is output, not a second source of truth. `loopt gen --check`
+writes nothing and exits 1 if any workflow is out of date, so run it in CI:
+
+```yaml
+- run: loopt gen --check
+```
+
+Each output is listed as `unchanged`, `stale` (the source changed), `missing`
+(never generated), or `edited` (the YAML was changed by hand). For `edited`
+you choose a direction: `loopt gen --force` regenerates the YAML from source
+and discards the hand edit, while `loopt import` turns the edited YAML back
+into source (it refuses to overwrite source you changed unless you pass
+`--force`).
 
 ## Add a language
 

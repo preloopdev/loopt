@@ -334,6 +334,133 @@ fn gen_force_overwrites_externally_edited_yaml() {
     assert_order_preserving_eq(pristine.value(), regenerated.value());
 }
 
+// ---------------------------------------------------------------------
+// `gen --check`: report drift between source and YAML without writing
+// anything, so CI can prove the committed YAML matches the committed source.
+// ---------------------------------------------------------------------
+
+#[test]
+fn gen_check_passes_when_yaml_matches_source_and_writes_nothing() {
+    let repo = TestRepo::new("check-clean");
+    let source_rel = ".loopt/workflows/check-clean.py";
+    let output_rel = ".github/workflows/check-clean.yml";
+
+    write_py_scratch(&repo, source_rel, &["start", "end"]);
+    repo.run(&["gen", source_rel]).assert_success();
+    let yaml_before = repo.read(output_rel);
+    let manifest_before = repo.read(".loopt/manifest.json");
+
+    let result = repo.run(&["gen", "--check"]);
+    result.assert_success();
+    assert!(
+        result.stdout.contains("unchanged"),
+        "a clean check must report the output as unchanged: {}",
+        result.stdout
+    );
+    assert_eq!(repo.read(output_rel), yaml_before);
+    assert_eq!(repo.read(".loopt/manifest.json"), manifest_before);
+}
+
+#[test]
+fn gen_check_fails_when_source_changed_and_leaves_disk_untouched() {
+    let repo = TestRepo::new("check-stale");
+    let source_rel = ".loopt/workflows/check-stale.py";
+    let output_rel = ".github/workflows/check-stale.yml";
+
+    write_py_scratch(&repo, source_rel, &["start"]);
+    repo.run(&["gen", source_rel]).assert_success();
+    let yaml_before = repo.read(output_rel);
+    let manifest_before = repo.read(".loopt/manifest.json");
+
+    // A real source edit that the committed YAML does not reflect yet.
+    write_py_scratch(&repo, source_rel, &["start", "end"]);
+    let result = repo.run(&["gen", "--check"]);
+    result.assert_failure();
+    assert!(
+        result
+            .stdout
+            .contains("stale .github/workflows/check-stale.yml"),
+        "the out-of-date output must be named: {}",
+        result.stdout
+    );
+    assert_eq!(
+        repo.read(output_rel),
+        yaml_before,
+        "`gen --check` must not rewrite the YAML"
+    );
+    assert_eq!(
+        repo.read(".loopt/manifest.json"),
+        manifest_before,
+        "`gen --check` must not touch the manifest"
+    );
+
+    // The remedy the error names must actually clear the drift.
+    repo.run(&["gen"]).assert_success();
+    repo.run(&["gen", "--check"]).assert_success();
+}
+
+#[test]
+fn gen_check_reports_missing_yaml_without_creating_anything() {
+    let repo = TestRepo::new("check-missing");
+    write_py_scratch(&repo, ".loopt/workflows/check-missing.py", &["start"]);
+
+    let result = repo.run(&["gen", "--check"]);
+    result.assert_failure();
+    assert!(
+        result
+            .stdout
+            .contains("missing .github/workflows/check-missing.yml"),
+        "a source with no generated YAML must be reported as missing: {}",
+        result.stdout
+    );
+    assert!(
+        repo.list_files(".github/workflows").is_empty(),
+        "`gen --check` must not create the missing YAML"
+    );
+    assert!(
+        !repo.exists(".loopt/manifest.json"),
+        "`gen --check` must not create a manifest"
+    );
+}
+
+#[test]
+fn gen_check_reports_every_drifted_output_not_just_the_first() {
+    let repo = TestRepo::new("check-all");
+    write_py_scratch(&repo, ".loopt/workflows/a-stale.py", &["start"]);
+    write_py_scratch(&repo, ".loopt/workflows/b-edited.py", &["start"]);
+    repo.run(&["gen"]).assert_success();
+
+    // One output drifts because its source changed, another because a human
+    // edited the generated YAML directly.
+    write_py_scratch(&repo, ".loopt/workflows/a-stale.py", &["start", "end"]);
+    let edited_yaml = repo
+        .read(".github/workflows/b-edited.yml")
+        .replace("echo start", "echo human-edit");
+    repo.write(".github/workflows/b-edited.yml", &edited_yaml);
+
+    let result = repo.run(&["gen", "--check"]);
+    result.assert_failure();
+    assert!(
+        result
+            .stdout
+            .contains("stale .github/workflows/a-stale.yml"),
+        "the stale output must be listed: {}",
+        result.stdout
+    );
+    assert!(
+        result
+            .stdout
+            .contains("edited .github/workflows/b-edited.yml"),
+        "the hand-edited output must be listed even after an earlier drift: {}",
+        result.stdout
+    );
+    assert_eq!(
+        repo.read(".github/workflows/b-edited.yml"),
+        edited_yaml,
+        "`gen --check` must leave a hand-edited YAML untouched"
+    );
+}
+
 #[test]
 fn import_without_force_refuses_to_clobber_existing_source() {
     let repo = TestRepo::new("import-collision");

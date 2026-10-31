@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use loopt::plugin::PluginSpec;
-use loopt::{gen, import, lint, plugin};
+use loopt::{gen, import, init, lint, plugin};
 use preloop_gha_sec::Persona;
 
 #[derive(Parser)]
@@ -27,6 +27,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Start a new project: write a starter workflow as source, then generate it.
+    ///
+    /// Picks a starter from the project files it finds (package.json,
+    /// Cargo.toml, go.mod, Python project files) unless --template is given.
+    /// Never overwrites an existing workflow; use `loopt import` for those.
+    Init {
+        /// Authoring language: typescript, python, go, or rust.
+        #[arg(long, default_value = "typescript")]
+        language: String,
+        /// Workflow name, used for `.loopt/workflows/<name>` and
+        /// `.github/workflows/<name>.yml`.
+        #[arg(long, default_value = "ci")]
+        name: String,
+        /// Starter content: auto, generic, node, rust, go, or python.
+        #[arg(long, default_value = "auto")]
+        template: String,
+    },
     /// Convert existing workflow YAML into editable authoring source.
     ///
     /// Never modifies the original YAML. Defaults to every direct child of
@@ -62,6 +79,10 @@ enum Command {
         /// Skip the native lint/security review after generation.
         #[arg(long)]
         no_lint: bool,
+        /// Verify generated YAML is up to date without writing anything.
+        /// Exits non-zero if any workflow would change.
+        #[arg(long, conflicts_with = "force")]
+        check: bool,
     },
     /// Run native correctness and security checks on workflow YAML.
     ///
@@ -97,6 +118,21 @@ fn main() -> Result<()> {
             let root = resolve_root(cli.root)?;
             plugin::serve_builtin_once(&language, &root)
         }
+        Command::Init {
+            language,
+            name,
+            template,
+        } => {
+            let root = resolve_root(cli.root)?;
+            init::run(
+                &root,
+                init::InitOptions {
+                    language,
+                    name,
+                    template,
+                },
+            )
+        }
         Command::Import {
             paths,
             language,
@@ -123,6 +159,7 @@ fn main() -> Result<()> {
             sources,
             force,
             no_lint,
+            check,
         } => {
             let root = resolve_root(cli.root)?;
             gen::run(
@@ -131,6 +168,7 @@ fn main() -> Result<()> {
                     sources,
                     force,
                     lint: !no_lint,
+                    check,
                 },
             )
         }

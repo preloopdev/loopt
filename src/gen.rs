@@ -7,6 +7,11 @@
 //! at the destination, leaving unaffected syntax untouched, or creates the
 //! file from scratch when nothing exists yet. A workflow that is already
 //! semantically up to date is left byte-for-byte alone.
+//!
+//! With `check`, the same plan is built but nothing is written: no YAML and
+//! no manifest. Each output is reported as unchanged, stale, missing, or
+//! edited outside Loopt, and any drift is an error. CI runs this to prove the
+//! committed YAML still matches the committed source.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -43,6 +48,9 @@ pub struct GenOptions {
     pub sources: Vec<PathBuf>,
     pub force: bool,
     pub lint: bool,
+    /// Report drift instead of writing: build the same plan as a normal run,
+    /// write nothing, and fail if any output would change.
+    pub check: bool,
 }
 
 struct Planned {
@@ -55,6 +63,35 @@ struct Planned {
     /// immediately before any commit so a slow source cannot hide an edit.
     original_yaml: Option<String>,
     entry: ManifestEntry,
+}
+
+/// How one output compares with what its source generates (`--check`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Status {
+    UpToDate,
+    /// The YAML exists but differs from what the source generates.
+    Stale,
+    /// The YAML does not exist yet.
+    Missing,
+    /// The YAML was edited outside Loopt, so a normal `gen` would refuse it.
+    EditedOutside,
+}
+
+impl Status {
+    fn label(self) -> &'static str {
+        match self {
+            Status::UpToDate => "unchanged",
+            Status::Stale => "stale",
+            Status::Missing => "missing",
+            Status::EditedOutside => "edited",
+        }
+    }
+}
+
+struct CheckLine {
+    status: Status,
+    output: PathBuf,
+    source: PathBuf,
 }
 
 fn order_sensitive_eq(left: &serde_json::Value, right: &serde_json::Value) -> bool {
@@ -77,6 +114,38 @@ fn order_sensitive_eq(left: &serde_json::Value, right: &serde_json::Value) -> bo
     }
 }
 
+/// Print one status line per output, then fail if any is out of date.
+/// Reads only; nothing here touches the disk.
+fn finish_check(report: &[CheckLine]) -> Result<()> {
+    for line in report {
+        println!(
+            "{} {} <- {}",
+            line.status.label(),
+            line.output.display(),
+            line.source.display()
+        );
+    }
+    let drifted = report
+        .iter()
+        .filter(|line| line.status != Status::UpToDate)
+        .count();
+    if drifted == 0 {
+        return Ok(());
+    }
+    let hint = if report
+        .iter()
+        .any(|line| line.status == Status::EditedOutside)
+    {
+        "run `loopt gen` (for YAML edited outside Loopt, `loopt gen --force` discards the edit and `loopt import` turns it back into source)"
+    } else {
+        "run `loopt gen`"
+    };
+    bail!(
+        "{drifted} of {} workflow(s) out of date; {hint}",
+        report.len()
+    )
+}
+
 pub fn run(root: &Path, options: GenOptions) -> Result<()> {
     let mut manifest = Manifest::load(root)?;
     let sources = discover_sources(root, &manifest, &options.sources)?;
@@ -89,6 +158,7 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
     // outputs written and others not.
     let mut planned: Vec<Planned> = Vec::new();
     let mut seen_outputs: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut report: Vec<CheckLine> = Vec::new();
 
     for source in &sources {
         let existing_entry = manifest.entry_for_source(source).cloned();
@@ -167,6 +237,14 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
                 .as_ref()
                 .is_some_and(|entry| &entry.last_accepted_yaml == on_disk);
             if !matches_known && !options.force {
+                if options.check {
+                    report.push(CheckLine {
+                        status: Status::EditedOutside,
+                        output,
+                        source: source.clone(),
+                    });
+                    continue;
+                }
                 bail!(
                     "{}: was edited outside Loopt since the last `loopt gen`; pass --force to overwrite, or `loopt import` it to pick up the edits",
                     output.display()
@@ -211,6 +289,20 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
         let unchanged = unchanged && headed == yaml;
         let yaml = headed;
 
+        if options.check {
+            let status = match (&on_disk, unchanged) {
+                (_, true) => Status::UpToDate,
+                (None, false) => Status::Missing,
+                (Some(_), false) => Status::Stale,
+            };
+            report.push(CheckLine {
+                status,
+                output,
+                source: source.clone(),
+            });
+            continue;
+        }
+
         let entry = ManifestEntry {
             language: language_id,
             source: source.clone(),
@@ -230,6 +322,10 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
             original_yaml: on_disk,
             entry,
         });
+    }
+
+    if options.check {
+        return finish_check(&report);
     }
 
     // Recheck every destination before the first write. This closes the

@@ -17,6 +17,8 @@ pub mod exec;
 pub mod gen;
 /// `loopt import`.
 pub mod import;
+/// `loopt init`.
+pub mod init;
 /// Shared language types (`GeneratedFile`, `GeneratedSource`,
 /// `CommandSpec`) and the built-in language registry.
 pub mod languages;
