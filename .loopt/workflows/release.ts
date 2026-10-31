@@ -33,13 +33,13 @@ const workflow = {
         {
           name: "Package",
           run:
-            'mkdir -p dist && tar -czf "dist/loopt-${GITHUB_REF_NAME}-${RUNNER_OS}-${RUNNER_ARCH}.tar.gz" -C target/release loopt',
+            'mkdir -p dist && asset="loopt-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" && tar -czf "dist/$asset" -C target/release loopt && (cd dist && sha256sum "$asset" > "$asset.sha256")',
         },
         {
           name: "Publish release asset",
           env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
           run:
-            'gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes; gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz --clobber',
+            'gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes; gh release upload "$GITHUB_REF_NAME" dist/* --clobber',
         },
       ],
     },
