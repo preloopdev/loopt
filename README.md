@@ -132,6 +132,21 @@ loopt import --language jsonwf --plugin python3 \
 sources in a custom language need a manifest entry; run `loopt import` once or
 add the `language` and `plugin` fields to the entry.
 
+Java needs no wrapper script and no Loopt change: pass `java` as the plugin
+program and the plugin source as its argument. `examples/java/JavaPlugin.java`
+is a complete JDK-only plugin (JDK 11+):
+
+```sh
+loopt import --language java --plugin java \
+  --plugin-arg examples/java/JavaPlugin.java
+loopt gen
+```
+
+It emits a `.java` entrypoint that prints the workflow JSON, and `synth` runs
+it with `java <source>`. The example deliberately keeps the workflow as an
+embedded JSON string; a production built-in Java emitter would generate
+ordinary Java data structures and a JSON writer instead.
+
 ### Built-in language
 
 Add `src/languages/<name>.rs` implementing:
