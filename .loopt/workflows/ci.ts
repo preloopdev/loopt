@@ -1,0 +1,44 @@
+// Loopt's own CI. Edit this file, then run `loopt gen` to write
+// .github/workflows/ci.yml.
+const workflow = {
+  name: "ci",
+  on: {
+    push: { branches: ["main"] },
+    pull_request: {},
+  },
+  permissions: { contents: "read" },
+  concurrency: {
+    group: "ci-${{ github.ref }}",
+    "cancel-in-progress": true,
+  },
+  jobs: {
+    test: {
+      name: "test",
+      "runs-on": ["self-hosted", "preloop-cpane"],
+      "timeout-minutes": 30,
+      steps: [
+        {
+          uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          with: { "persist-credentials": false },
+        },
+        {
+          uses: "dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec",
+          with: { toolchain: "1.97", components: "rustfmt,clippy" },
+        },
+        { name: "Format", run: "cargo fmt --all --check" },
+        {
+          name: "Clippy",
+          run: "cargo clippy --locked --all-targets -- -D warnings",
+        },
+        { name: "Test", run: "cargo test --locked --lib --tests" },
+        { name: "Build", run: "cargo build --locked" },
+        {
+          name: "Language toolchains",
+          run: "node --version && python3 --version && go version",
+        },
+        { name: "Loopt version", run: "./target/debug/loopt --version" },
+      ],
+    },
+  },
+};
+console.log(JSON.stringify(workflow));
