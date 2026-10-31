@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod context;
+mod structure;
 
 /// Importance of a finding, independently of confidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -87,6 +88,7 @@ pub struct LintContext {
 pub fn lint_workflow(document: &WorkflowDocument, context: &LintContext) -> Vec<Diagnostic> {
     let mut findings = Vec::new();
     walk(document.value(), "", Scope::Root, false, &mut findings);
+    structure::check(document.value(), &mut findings);
     context::check(document, context, &mut findings);
     findings.sort_by(|left, right| {
         (&left.path, &left.rule_id, &left.source, &left.message).cmp(&(
