@@ -1,10 +1,13 @@
 [package]
 name = "preloop-gha-expressions"
-version = "0.2.0"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "GitHub Actions expression parser and evaluator (vendored from Preloop)"
-publish = false
+description = "GitHub Actions expression parser and evaluator"
+repository = "https://github.com/preloopdev/loopt"
+readme = "README.md"
+keywords = ["github-actions", "expressions", "parser"]
+categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
 indexmap = { version = "2", features = ["serde"] }

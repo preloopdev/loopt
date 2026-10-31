@@ -38,7 +38,7 @@ use support::{
 struct RoundTrip {
     label: String,
     workflow_rel: String,
-    oracle: preloop_gha_parser::WorkflowDocument,
+    oracle: preloop_gha_authoring::WorkflowDocument,
 }
 
 /// One repository per language, so the generated Rust projects share a

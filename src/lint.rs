@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use preloop_gha_authoring::WorkflowDocument;
 use preloop_gha_lint::{lint_workflow, Diagnostic, LintContext, Severity};
-use preloop_gha_parser::WorkflowDocument;
 use preloop_gha_sec::{audit, AuditContext, Persona, UnavailableCheck};
 use serde::Serialize;
 

@@ -30,7 +30,7 @@
 
 use std::collections::BTreeSet;
 
-use preloop_gha_parser::WorkflowDocument;
+use preloop_gha_authoring::WorkflowDocument;
 use serde::{Deserialize, Serialize};
 
 pub use preloop_gha_lint::{Confidence, Diagnostic, Severity};

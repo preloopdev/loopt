@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
+use preloop_gha_authoring::{ENGINE_PROVIDED_SECRETS, WorkflowDocument};
 use preloop_gha_expressions::collect_secret_reads;
-use preloop_gha_parser::{ENGINE_PROVIDED_SECRETS, WorkflowDocument};
 use serde_json::Value;
 
 use crate::{Diagnostic, LintContext, diagnostic, expressions, is_disabled};

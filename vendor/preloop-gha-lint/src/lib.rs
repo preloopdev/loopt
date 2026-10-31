@@ -6,8 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use preloop_gha_authoring::WorkflowDocument;
 use preloop_gha_expressions::{collect_secret_reads, validate_expression};
-use preloop_gha_parser::WorkflowDocument;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

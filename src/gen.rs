@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use preloop_gha_parser::WorkflowDocument;
+use preloop_gha_authoring::WorkflowDocument;
 
 use crate::exec;
 use crate::languages::Language;

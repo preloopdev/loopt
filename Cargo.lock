@@ -248,8 +248,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "preloop-gha-authoring",
  "preloop-gha-lint",
- "preloop-gha-parser",
  "preloop-gha-sec",
  "serde",
  "serde_json",
@@ -292,8 +292,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "preloop-gha-authoring"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
 name = "preloop-gha-expressions"
-version = "0.2.0"
+version = "0.1.0"
 dependencies = [
  "glob",
  "indexmap",
@@ -308,29 +318,19 @@ dependencies = [
 name = "preloop-gha-lint"
 version = "0.1.0"
 dependencies = [
+ "preloop-gha-authoring",
  "preloop-gha-expressions",
- "preloop-gha-parser",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "preloop-gha-parser"
-version = "0.2.0"
-dependencies = [
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror",
 ]
 
 [[package]]
 name = "preloop-gha-sec"
 version = "0.1.0"
 dependencies = [
+ "preloop-gha-authoring",
  "preloop-gha-expressions",
  "preloop-gha-lint",
- "preloop-gha-parser",
  "regex",
  "serde",
  "serde_json",

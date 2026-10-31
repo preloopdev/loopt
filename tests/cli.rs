@@ -310,7 +310,7 @@ fn gen_force_overwrites_externally_edited_yaml() {
     write_py_scratch(&repo, source_rel, &["start"]);
     repo.run(&["gen", source_rel]).assert_success();
     let generated_once = repo.read(output_rel);
-    let pristine = preloop_gha_parser::WorkflowDocument::parse(&generated_once)
+    let pristine = preloop_gha_authoring::WorkflowDocument::parse(&generated_once)
         .expect("first generation parses");
     assert!(
         generated_once.contains("echo start"),

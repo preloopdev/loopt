@@ -2,7 +2,7 @@
 //!
 //! Every test exercises the real `loopt` binary as a subprocess (never the
 //! crate's internals directly) and the real vendored parser
-//! (`preloop_gha_parser::WorkflowDocument`) as the single oracle for both
+//! (`preloop_gha_authoring::WorkflowDocument`) as the single oracle for both
 //! "is this YAML representable at all" and "do two workflow documents mean
 //! the same thing, in the same nested key order". Nothing here fabricates
 //! expected output: every assertion is derived from parsing real files
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use preloop_gha_parser::WorkflowDocument;
+use preloop_gha_authoring::WorkflowDocument;
 use serde_json::Value;
 
 /// Optional extra `PATH` entry, supplied by the developer or CI when the
