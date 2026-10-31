@@ -28,121 +28,22 @@
 
 mod support;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use support::{
     assert_order_preserving_eq, discover_fixture_yaml_files, fixture_label, fixtures_root,
     generated_workflow_files, parse_document, TestRepo,
 };
 
-enum Outcome {
-    RoundTripped,
-    CleanlyRejected,
-    Failure(String),
+struct RoundTrip {
+    label: String,
+    workflow_rel: String,
+    oracle: preloop_gha_parser::WorkflowDocument,
 }
 
-fn check_one(language: &str, fixture: &Path, label: &str) -> Outcome {
-    let original_text = match std::fs::read_to_string(fixture) {
-        Ok(t) => t,
-        Err(e) => return Outcome::Failure(format!("could not read fixture: {e}")),
-    };
-
-    // The same shared parser the CLI uses is the oracle for whether this
-    // document is representable at all -- not a hand-maintained skip list.
-    let oracle = parse_document(fixture);
-
-    let repo = TestRepo::new(&format!("{language}-{label}"));
-    let file_name = fixture
-        .file_name()
-        .expect("fixture path has a file name")
-        .to_string_lossy()
-        .into_owned();
-    let workflow_rel = format!(".github/workflows/{file_name}");
-    repo.write(&workflow_rel, &original_text);
-
-    let import = repo.run(&["import", &workflow_rel, "--language", language]);
-
-    match oracle {
-        Err(_parse_err) => {
-            // Syntax-invalid or otherwise unrepresentable: import must fail
-            // cleanly -- no panic, nonzero exit, nothing written -- never
-            // silently accepted and never skipped.
-            if import.success {
-                return Outcome::Failure(format!(
-                    "fixture does not parse with the shared parser, but `loopt import` \
-                     succeeded anyway (stdout: {:?})",
-                    import.stdout
-                ));
-            }
-            let generated = generated_workflow_files(&repo);
-            if !generated.is_empty() {
-                return Outcome::Failure(format!(
-                    "import of an unrepresentable fixture still wrote generated files: \
-                     {generated:?}"
-                ));
-            }
-            Outcome::CleanlyRejected
-        }
-        Ok(oracle_doc) => {
-            if !import.success {
-                return Outcome::Failure(format!(
-                    "shared parser accepts this fixture but `loopt import` failed: \
-                     exit {:?}\nstderr: {}",
-                    import.status_code, import.stderr
-                ));
-            }
-
-            let generated = generated_workflow_files(&repo);
-            if generated.is_empty() {
-                return Outcome::Failure(
-                    "import succeeded but wrote no files under .loopt/workflows".to_string(),
-                );
-            }
-
-            // Execute the generated authoring program (never the fixture's
-            // own commands) via `loopt gen`, and turn its JSON output back
-            // into YAML.
-            let gen = repo.run(&["gen"]);
-            if !gen.success {
-                return Outcome::Failure(format!(
-                    "`loopt gen` failed after importing: exit {:?}\nstderr: {}\n\
-                     generated files: {generated:?}",
-                    gen.status_code, gen.stderr
-                ));
-            }
-
-            if !repo.exists(&workflow_rel) {
-                return Outcome::Failure(format!("`loopt gen` did not (re)write {workflow_rel}"));
-            }
-
-            let regenerated_path = repo.path(&workflow_rel);
-            let regenerated = match parse_document(&regenerated_path) {
-                Ok(doc) => doc,
-                Err(e) => {
-                    return Outcome::Failure(format!(
-                        "regenerated YAML does not parse with the shared parser: {e}"
-                    ));
-                }
-            };
-
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                assert_order_preserving_eq(oracle_doc.value(), regenerated.value());
-            }));
-            match result {
-                Ok(()) => Outcome::RoundTripped,
-                Err(payload) => {
-                    let msg = payload
-                        .downcast_ref::<String>()
-                        .cloned()
-                        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-                        .unwrap_or_else(|| "round-trip comparison panicked".to_string());
-                    Outcome::Failure(msg)
-                }
-            }
-        }
-    }
-}
-
+/// One repository per language, so the generated Rust projects share a
+/// single cargo target directory instead of cold-building serde_json once
+/// per fixture.
 fn run_corpus_for_language(language: &str) {
     let fixtures = discover_fixture_yaml_files();
     assert!(
@@ -150,24 +51,119 @@ fn run_corpus_for_language(language: &str) {
         "no fixture YAML files discovered under PRELOOP_FIXTURES"
     );
     let fixtures_root: PathBuf = fixtures_root();
+    let repo = TestRepo::new(&format!("corpus-{language}"));
 
+    let mut round_trips: Vec<RoundTrip> = Vec::new();
     let mut failures = Vec::new();
-    let mut round_tripped = 0usize;
     let mut cleanly_rejected = 0usize;
 
-    for fixture in &fixtures {
+    // Unrepresentable fixtures are exercised in their own repository so a
+    // single expected import failure cannot abort the batched import of
+    // every representable workflow.
+    for (index, fixture) in fixtures.iter().enumerate() {
         let label = fixture_label(&fixtures_root, fixture);
-        match check_one(language, fixture, &label) {
-            Outcome::RoundTripped => round_tripped += 1,
-            Outcome::CleanlyRejected => cleanly_rejected += 1,
-            Outcome::Failure(msg) => failures.push(format!("{label}: {msg}")),
+        let original_text = match std::fs::read_to_string(fixture) {
+            Ok(text) => text,
+            Err(error) => {
+                failures.push(format!("{label}: could not read fixture: {error}"));
+                continue;
+            }
+        };
+        let workflow_rel = format!(
+            ".github/workflows/{index:03}-{}.yml",
+            sanitize_label(&label)
+        );
+        match parse_document(fixture) {
+            Ok(oracle) => {
+                repo.write(&workflow_rel, &original_text);
+                round_trips.push(RoundTrip {
+                    label,
+                    workflow_rel,
+                    oracle,
+                });
+            }
+            Err(_) => {
+                let rejected_repo = TestRepo::new(&format!("reject-{language}-{index}"));
+                rejected_repo.write(&workflow_rel, &original_text);
+                let import = rejected_repo.run(&["import", &workflow_rel, "--language", language]);
+                if import.success {
+                    failures.push(format!(
+                        "{label}: shared parser rejects this fixture but `loopt import` succeeded \
+                         (stdout: {:?})",
+                        import.stdout
+                    ));
+                    continue;
+                }
+                let generated = generated_workflow_files(&rejected_repo);
+                if !generated.is_empty() {
+                    failures.push(format!(
+                        "{label}: import of an unrepresentable fixture wrote {generated:?}"
+                    ));
+                    continue;
+                }
+                cleanly_rejected += 1;
+            }
+        }
+    }
+
+    if !round_trips.is_empty() {
+        let mut args: Vec<String> = vec!["import".to_owned()];
+        args.extend(round_trips.iter().map(|item| item.workflow_rel.clone()));
+        args.push("--language".to_owned());
+        args.push(language.to_owned());
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let import = repo.run(&args);
+        if !import.success {
+            panic!(
+                "[{language}] batched import failed: exit {:?}\nstdout: {}\nstderr: {}",
+                import.status_code, import.stdout, import.stderr
+            );
+        }
+
+        let generated = generated_workflow_files(&repo);
+        if generated.is_empty() {
+            panic!("[{language}] import succeeded but wrote no source under .loopt/workflows");
+        }
+
+        let gen = repo.run(&["gen"]);
+        if !gen.success {
+            panic!(
+                "[{language}] `loopt gen` failed: exit {:?}\nstdout: {}\nstderr: {}",
+                gen.status_code, gen.stdout, gen.stderr
+            );
+        }
+
+        for item in &round_trips {
+            let regenerated_path = repo.path(&item.workflow_rel);
+            let regenerated = match parse_document(&regenerated_path) {
+                Ok(document) => document,
+                Err(error) => {
+                    failures.push(format!(
+                        "{}: regenerated YAML does not parse: {error}",
+                        item.label
+                    ));
+                    continue;
+                }
+            };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                assert_order_preserving_eq(item.oracle.value(), regenerated.value());
+            }));
+            if let Err(payload) = result {
+                let message = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "round-trip comparison panicked".to_string());
+                failures.push(format!("{}: {message}", item.label));
+            }
         }
     }
 
     eprintln!(
-        "[{language}] corpus: {} fixtures, {round_tripped} round-tripped, \
-         {cleanly_rejected} cleanly rejected as unrepresentable, {} failed",
+        "[{language}] corpus: {} fixtures, {} round-tripped, {cleanly_rejected} cleanly \
+         rejected as unrepresentable, {} failed",
         fixtures.len(),
+        round_trips.len().saturating_sub(failures.len()),
         failures.len()
     );
 
@@ -178,6 +174,19 @@ fn run_corpus_for_language(language: &str) {
         fixtures.len(),
         failures.join("\n\n")
     );
+}
+
+fn sanitize_label(label: &str) -> String {
+    label
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[test]

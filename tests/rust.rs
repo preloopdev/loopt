@@ -260,10 +260,10 @@ fn command_runs_cargo_with_project_manifest_and_scoped_target_dir() {
         .iter()
         .position(|a| a == "--target-dir")
         .expect("--target-dir flag present");
-    // Scoped under .loopt/.cache, mirroring the project's path, never
-    // inside .loopt/workflows (so build artifacts never sit next to
-    // human-edited source).
-    assert_eq!(cmd.args[target_idx + 1], ".loopt/.cache/ci/deploy");
+    // Shared repository cache under .loopt/.cache, never inside
+    // .loopt/workflows (so build artifacts never sit next to human-edited
+    // source) and never a per-project cold build.
+    assert_eq!(cmd.args[target_idx + 1], ".loopt/.cache/rust-target");
 
     let bin_idx = cmd
         .args
@@ -292,5 +292,5 @@ fn command_scopes_target_dir_even_outside_loopt_workflows() {
         .iter()
         .position(|a| a == "--target-dir")
         .expect("--target-dir flag present");
-    assert_eq!(cmd.args[target_idx + 1], ".loopt/.cache/custom/place");
+    assert_eq!(cmd.args[target_idx + 1], ".loopt/.cache/rust-target");
 }

@@ -81,16 +81,14 @@ pub fn command(source: &Path) -> Result<CommandSpec> {
     })
 }
 
-/// Project-scoped build cache for `project_dir` (e.g.
-/// `.loopt/workflows/ci/deploy`), rooted at `.loopt/.cache` and mirroring
-/// the project's path under `.loopt/workflows` so distinct workflow sources
-/// never share -- or collide over -- a `cargo` target directory.
-fn cache_target_dir(project_dir: &Path) -> PathBuf {
-    let workflows_root = Path::new(".loopt").join("workflows");
-    let relative = project_dir
-        .strip_prefix(&workflows_root)
-        .unwrap_or(project_dir);
-    Path::new(".loopt").join(".cache").join(relative)
+/// Repository-scoped build cache rooted at `.loopt/.cache/rust-target`.
+///
+/// Every generated Rust workflow in the repository shares the compiled
+/// dependency artifacts (serde_json is the only dependency), so importing a
+/// hundred workflows does not rebuild serde_json a hundred times. Cargo
+/// serializes concurrent builds on this directory itself.
+fn cache_target_dir(_project_dir: &Path) -> PathBuf {
+    Path::new(".loopt").join(".cache").join("rust-target")
 }
 
 fn path_to_arg(path: &Path) -> Result<String> {
