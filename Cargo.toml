@@ -15,7 +15,8 @@ license = "MIT"
 description = "Author GitHub Actions workflows in TypeScript, Python, Go, or Rust, and generate standard workflow YAML from them."
 repository = "https://github.com/preloopdev/loopt"
 readme = "README.md"
-publish = false
+keywords = ["github-actions", "ci", "workflow", "yaml", "codegen"]
+categories = ["development-tools", "command-line-utilities"]
 
 [lib]
 name = "loopt"
@@ -31,6 +32,6 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
-preloop-gha-lint = { path = "vendor/preloop-gha-lint" }
-preloop-gha-authoring = { path = "vendor/preloop-gha-authoring" }
-preloop-gha-sec = { path = "vendor/preloop-gha-sec" }
+preloop-gha-lint = { version = "0.1.0", path = "vendor/preloop-gha-lint" }
+preloop-gha-authoring = { version = "0.1.0", path = "vendor/preloop-gha-authoring" }
+preloop-gha-sec = { version = "0.1.0", path = "vendor/preloop-gha-sec" }
