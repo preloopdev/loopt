@@ -1,0 +1,161 @@
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Hierarchical expression context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Context {
+    pub(crate) roots: BTreeMap<String, Value>,
+    pub(crate) success: bool,
+    pub(crate) failure: bool,
+    pub(crate) cancelled: bool,
+    /// Workspace directory for hashFiles() evaluation.
+    pub(crate) workspace_dir: Option<String>,
+}
+
+impl Context {
+    /// Create an empty context with default successful status.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set status-function values for this evaluation.
+    pub fn with_status(mut self, success: bool, failure: bool, cancelled: bool) -> Self {
+        self.success = success;
+        self.failure = failure;
+        self.cancelled = cancelled;
+        self
+    }
+
+    /// Set workspace directory for hashFiles() evaluation.
+    pub fn with_workspace(mut self, dir: String) -> Self {
+        self.workspace_dir = Some(dir);
+        self
+    }
+
+    /// Insert a root object.
+    pub fn insert(&mut self, key: impl Into<String>, value: Value) {
+        self.roots.insert(key.into(), value);
+    }
+
+    /// Merge the entries of `extra` into the object root at `key`, creating
+    /// the root if absent. Used to overlay step-level environment variables
+    /// onto the job `env` context while evaluating a step's own script.
+    pub fn merge_root(&mut self, key: &str, extra: Value) {
+        match self.roots.remove(key) {
+            Some(Value::Object(mut base)) => {
+                if let Value::Object(extra_map) = extra {
+                    base.extend(extra_map);
+                }
+                self.roots.insert(key.to_string(), Value::Object(base));
+            }
+            _ => {
+                self.roots.insert(key.to_string(), extra);
+            }
+        }
+    }
+
+    /// Resolve a dotted path such as `github.event_name`.
+    /// Resolve a path such as `github.event_name`, with bracket access and wildcard support.
+    ///
+    /// - Numeric segment: array index (e.g. path built from `a[0]`)
+    /// - `*` segment: collect all values from an object/array, then apply next segment
+    pub fn resolve(&self, path: &[String]) -> Value {
+        let Some((first, rest)) = path.split_first() else {
+            return Value::Null;
+        };
+        let mut current = self.roots.get(first).cloned().unwrap_or(Value::Null);
+        for segment in rest {
+            if segment == "*" {
+                // Object filter: collect values from object or array
+                current = match current {
+                    Value::Object(map) => Value::Array(map.into_values().collect()),
+                    Value::Array(arr) => Value::Array(arr),
+                    _ => Value::Null,
+                };
+                continue;
+            }
+            current = match current {
+                Value::Object(map) => map.get(segment).cloned().unwrap_or(Value::Null),
+                // After a wildcard, apply the next segment to each element
+                Value::Array(arr) => Value::Array(
+                    arr.into_iter()
+                        .filter_map(|v| match v {
+                            Value::Object(ref m) => m.get(segment).cloned(),
+                            Value::Array(ref a) => segment
+                                .parse::<usize>()
+                                .ok()
+                                .and_then(|i| a.get(i))
+                                .cloned(),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                // Numeric index into array (from bracket access `a[0]`)
+                _ => Value::Null,
+            };
+        }
+        current
+    }
+
+    /// Borrow a simple dotted path without cloning the resolved value.
+    ///
+    /// Wildcards and array projections can construct new arrays, so callers
+    /// that need those forms should continue using [`Self::resolve`].
+    pub(crate) fn resolve_ref(&self, path: &[String]) -> Option<&Value> {
+        let (first, rest) = path.split_first()?;
+        let mut current = self.roots.get(first)?;
+        for segment in rest {
+            if segment == "*" {
+                return None;
+            }
+            current = current.as_object()?.get(segment)?;
+        }
+        Some(current)
+    }
+
+    /// Resolve a path against an existing value (used for member access on expression results).
+    pub fn resolve_value(mut current: Value, path: &[String]) -> Value {
+        for segment in path {
+            if segment == "*" {
+                current = match current {
+                    Value::Object(map) => Value::Array(map.into_values().collect()),
+                    Value::Array(arr) => Value::Array(arr),
+                    _ => Value::Null,
+                };
+                continue;
+            }
+            current = match current {
+                Value::Object(map) => map.get(segment).cloned().unwrap_or(Value::Null),
+                Value::Array(arr) => Value::Array(
+                    arr.into_iter()
+                        .filter_map(|v| match v {
+                            Value::Object(ref m) => m.get(segment).cloned(),
+                            Value::Array(ref a) => segment
+                                .parse::<usize>()
+                                .ok()
+                                .and_then(|i| a.get(i))
+                                .cloned(),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                _ => Value::Null,
+            };
+        }
+        current
+    }
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self {
+            roots: BTreeMap::new(),
+            success: true,
+            failure: false,
+            cancelled: false,
+            workspace_dir: None,
+        }
+    }
+}

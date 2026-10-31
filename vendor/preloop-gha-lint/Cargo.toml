@@ -1,0 +1,13 @@
+[package]
+name = "preloop-gha-lint"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Native GitHub Actions workflow correctness lint (vendored from Preloop)"
+publish = false
+
+[dependencies]
+preloop-gha-expressions = { path = "../preloop-gha-expressions" }
+preloop-gha-parser = { path = "../preloop-gha-parser" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }

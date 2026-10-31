@@ -25,6 +25,7 @@ const WORKFLOWS_DIR: &str = ".github/workflows";
 pub struct GenOptions {
     pub sources: Vec<PathBuf>,
     pub force: bool,
+    pub lint: bool,
 }
 
 struct Planned {
@@ -248,6 +249,19 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
                 item.output.display(),
                 item.source.display()
             );
+        }
+    }
+
+    if options.lint {
+        let outputs: Vec<PathBuf> = planned.iter().map(|item| item.output.clone()).collect();
+        match crate::lint::check_paths(
+            root,
+            &outputs,
+            preloop_gha_sec::Persona::Regular,
+            &preloop_gha_lint::LintContext::default(),
+        ) {
+            Ok(reports) => crate::lint::print_human(&reports),
+            Err(error) => eprintln!("lint review skipped: {error}"),
         }
     }
     Ok(())

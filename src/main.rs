@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use loopt::plugin::PluginSpec;
-use loopt::{gen, import, plugin};
+use loopt::{gen, import, lint, plugin};
+use preloop_gha_sec::Persona;
 
 #[derive(Parser)]
 #[command(
@@ -58,6 +59,26 @@ enum Command {
         /// Overwrite workflow YAML Loopt did not last write.
         #[arg(long)]
         force: bool,
+        /// Skip the native lint/security review after generation.
+        #[arg(long)]
+        no_lint: bool,
+    },
+    /// Run native correctness and security checks on workflow YAML.
+    ///
+    /// Defaults to the generated outputs recorded in `.loopt/manifest.json`,
+    /// or direct `.github/workflows` files when nothing has been generated.
+    Lint {
+        /// Workflow YAML files to check.
+        paths: Vec<PathBuf>,
+        /// Machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+        /// Reviewer persona: regular, pedantic, auditor.
+        #[arg(long, default_value = "regular")]
+        persona: String,
+        /// JSON inventory of runner labels and secret names (never values).
+        #[arg(long)]
+        context: Option<PathBuf>,
     },
     /// Advanced: serve one describe/emit/synth request for a built-in
     /// language over stdin/stdout, then exit. This is the reference a
@@ -98,10 +119,48 @@ fn main() -> Result<()> {
                 },
             )
         }
-        Command::Gen { sources, force } => {
+        Command::Gen {
+            sources,
+            force,
+            no_lint,
+        } => {
             let root = resolve_root(cli.root)?;
-            gen::run(&root, gen::GenOptions { sources, force })
+            gen::run(
+                &root,
+                gen::GenOptions {
+                    sources,
+                    force,
+                    lint: !no_lint,
+                },
+            )
         }
+        Command::Lint {
+            paths,
+            json,
+            persona,
+            context,
+        } => {
+            let root = resolve_root(cli.root)?;
+            let persona = parse_persona(&persona)?;
+            lint::run(
+                &root,
+                lint::LintOptions {
+                    paths,
+                    json,
+                    persona,
+                    context,
+                },
+            )
+        }
+    }
+}
+
+fn parse_persona(value: &str) -> Result<Persona> {
+    match value {
+        "regular" => Ok(Persona::Regular),
+        "pedantic" => Ok(Persona::Pedantic),
+        "auditor" => Ok(Persona::Auditor),
+        other => anyhow::bail!("unknown persona {other:?}; expected regular, pedantic, or auditor"),
     }
 }
 

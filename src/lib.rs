@@ -20,6 +20,8 @@ pub mod import;
 /// Shared language types (`GeneratedFile`, `GeneratedSource`,
 /// `CommandSpec`) and the built-in language registry.
 pub mod languages;
+/// `loopt lint`: native correctness and security checks.
+pub mod lint;
 /// `.loopt/manifest.json`: the durable source/output map.
 pub mod manifest;
 /// Path safety and atomic-write helpers.

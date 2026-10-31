@@ -108,6 +108,15 @@ impl WorkflowDocument {
         &self.value
     }
 
+    /// Borrow the original YAML source.
+    ///
+    /// Static rules that need comment or formatting provenance (for example
+    /// whether a permission grant is explained) read this instead of guessing
+    /// from the JSON view.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
     /// Emit the current document as YAML.
     ///
     /// Unchanged source-backed documents are emitted byte-for-byte. Changed

@@ -53,6 +53,26 @@ A source can also be authored from scratch and generated without a prior
 import; the default destination is
 `.github/workflows/<source-stem>.yml`.
 
+`loopt gen` also runs the native correctness and security review on the
+generated workflows and prints findings to stderr. Use `--no-lint` to skip it.
+
+## Review workflows
+
+```sh
+loopt lint
+```
+
+`loopt lint` checks the generated workflow outputs (or direct
+`.github/workflows` files when nothing has been generated). It combines the
+shared correctness lint with the native security audits. Warnings and
+informational findings exit 0; an `error` finding exits 1.
+
+Use `--json` for machine-readable output, `--persona pedantic|auditor` for
+stricter policy checks, and `--context inventory.json` to supply known runner
+labels and secret **names** (never values). Checks that need repository
+evidence that is not supplied are reported as unavailable rather than treated
+as safe.
+
 ## Supported languages
 
 | Language | Source | Runtime used by `gen` |

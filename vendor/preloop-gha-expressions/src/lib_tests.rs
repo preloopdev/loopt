@@ -1,0 +1,1680 @@
+use proptest::prelude::*;
+use serde_json::json;
+
+use super::*;
+
+#[test]
+fn format_output_cap_rejects_amplification_bomb() {
+    // Nested format() triples its argument per level: 20 levels around a
+    // 1 KB literal demands ~3 GB. Uncapped this was killed at 6.2 GB
+    // resident; the cap must trip as an ordinary error instead.
+    let mut expr = format!("'{}'", "A".repeat(1024));
+    for _ in 0..20 {
+        expr = format!("format('{{0}}{{0}}{{0}}', {expr})");
+    }
+    assert!(matches!(
+        eval_expression(&expr, &Context::default()),
+        Err(ExpressionError::FormatOutputTooLarge(_))
+    ));
+}
+
+#[test]
+fn format_output_cap_allows_normal_formatting() {
+    assert_eq!(
+        eval_expression("format('{0} {1}', 'hello', 'world')", &Context::default()).unwrap(),
+        Value::String("hello world".to_owned())
+    );
+    // Just under the cap passes through untouched.
+    let value = "A".repeat(500_000);
+    assert_eq!(
+        eval_expression(
+            &format!("format('{{0}}{{0}}', '{value}')",),
+            &Context::default()
+        )
+        .unwrap(),
+        Value::String(format!("{value}{value}"))
+    );
+}
+
+#[test]
+fn format_argument_evaluation_has_an_expression_wide_budget() {
+    let value = "A".repeat(500_000);
+    let mut expr = "format('{0}', 'ok'".to_owned();
+    for _ in 0..20 {
+        expr.push_str(", '");
+        expr.push_str(&value);
+        expr.push('\'');
+    }
+    expr.push(')');
+
+    assert!(matches!(
+        eval_expression(&expr, &Context::default()),
+        Err(ExpressionError::EvaluationTooLarge(_))
+    ));
+}
+
+#[test]
+fn evaluation_budget_counts_container_and_null_overhead() {
+    let mut context = Context::default();
+    context.insert("values", Value::Array(vec![Value::Null; 300_000]));
+
+    assert!(matches!(
+        eval_expression("values", &context),
+        Err(ExpressionError::EvaluationTooLarge(_))
+    ));
+}
+
+#[test]
+fn format_rejects_large_container_before_unbounded_render() {
+    let mut context = Context::default();
+    context.insert(
+        "values",
+        Value::Array(vec![Value::String("A".repeat(2_000)); 1_000]),
+    );
+
+    assert!(matches!(
+        eval_expression("format('{0}', values)", &context),
+        Err(ExpressionError::FormatOutputTooLarge(_))
+    ));
+}
+
+#[test]
+fn format_bounds_container_serialization_by_format_capacity() {
+    // Container serialization is bounded by the remaining format capacity
+    // (1 MiB), not the evaluation budget: a render that exceeds the format
+    // cap must report FormatOutputTooLarge even when the evaluation budget
+    // is the tighter constraint. Without the format-capacity bound the
+    // serialization fails against the evaluation budget instead and reports
+    // EvaluationTooLarge.
+    let mut context = Context::default();
+    // Consume most of the evaluation budget with an unreferenced argument.
+    context.insert("bomb", Value::String("A".repeat(6_000_000)));
+    // JSON escaping doubles the render: 800_000 quotes render as ~1.6 MiB of
+    // JSON while the charged value size stays under the remaining budget.
+    context.insert(
+        "container",
+        Value::Array(vec![Value::String("\"".repeat(800_000))]),
+    );
+
+    assert!(matches!(
+        eval_expression("format('{1}', bomb, container)", &context),
+        Err(ExpressionError::FormatOutputTooLarge(_))
+    ));
+}
+
+#[test]
+fn evaluates_context_and_functions() {
+    let mut context = Context::default();
+    context.insert("github", json!({"event_name": "push"}));
+    context.insert("matrix", json!({"os": "ubuntu-latest"}));
+
+    assert_eq!(
+        eval_expression("${{ github.event_name == 'PUSH' }}", &context).unwrap(),
+        Value::Bool(true)
+    );
+    assert!(eval_bool("contains(matrix.os, 'ubuntu') && success()", &context).unwrap());
+}
+
+#[test]
+fn status_functions_use_context_state() {
+    let context = Context::default().with_status(false, true, false);
+    assert!(!eval_bool("success()", &context).unwrap());
+    assert!(eval_bool("failure()", &context).unwrap());
+    assert!(!eval_bool("cancelled()", &context).unwrap());
+    assert!(eval_bool("always()", &context).unwrap());
+}
+
+#[test]
+fn short_circuits() {
+    let context = Context::default();
+    assert_eq!(
+        eval_expression("false && unknown()", &context).unwrap(),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        eval_expression("'left' || unknown()", &context).unwrap(),
+        Value::String("left".to_owned())
+    );
+}
+
+#[test]
+fn undefined_context_keys_coalesce_to_empty_like_github() {
+    // GitHub expressions treat an undefined context key as an empty string
+    // (with a warning), so a missing `head_ref` must coalesce through `||` to
+    // the present `ref_name`. Mastodon's cache `key:` uses exactly this
+    // pattern; the empty-input failure was a job-message round-trip bug that
+    // dropped the template, not an evaluator bug.
+    let mut context = Context::default();
+    context.insert(
+        "github",
+        json!({"ref": "refs/heads/main", "ref_name": "main"}),
+    );
+    assert_eq!(
+        eval_expression("github.head_ref || github.ref_name", &context).unwrap(),
+        Value::String("main".to_owned())
+    );
+    // An undefined key on its own is null (renders as the empty string).
+    assert_eq!(
+        eval_expression("github.head_ref", &context).unwrap(),
+        Value::Null
+    );
+}
+
+#[test]
+fn evaluates_json_join_and_comparisons() {
+    let context = Context::default();
+
+    assert_eq!(
+        eval_expression("case(true, 'first', 'second')", &context).unwrap(),
+        Value::String("first".to_owned())
+    );
+    assert_eq!(
+        eval_expression("case(false, 'first', true, 'second', 'third')", &context).unwrap(),
+        Value::String("second".to_owned())
+    );
+    assert_eq!(
+        eval_expression("case(false, 'first', 'default')", &context).unwrap(),
+        Value::String("default".to_owned())
+    );
+    assert!(validate_expression("case(true, 'a')").is_err());
+    assert!(validate_expression("case(true, 'a', false, 'b')").is_err());
+    assert!(validate_expression("case(github.ref == 'refs/heads/dev', format('{0}-{1}', github.workflow, github.run_id), 'default')").is_ok());
+
+    assert_eq!(
+        eval_expression("fromJson('[\"a\",\"b\"]')", &context).unwrap(),
+        json!(["a", "b"])
+    );
+    assert_eq!(
+        eval_expression("join(fromJson('[\"a\",\"b\"]'), '-')", &context).unwrap(),
+        Value::String("a-b".to_owned())
+    );
+    assert_eq!(
+        eval_expression("'10' > 2", &context).unwrap(),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval_expression("2 <= 2", &context).unwrap(),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval_expression("'B' > 'a'", &context).unwrap(),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval_expression("'a' < 'B'", &context).unwrap(),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval_expression("'ABC' >= 'abc'", &context).unwrap(),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval_expression("'abc' <= 'ABC'", &context).unwrap(),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval_expression("hashFiles('Cargo.toml')", &context).unwrap(),
+        Value::String(String::new())
+    );
+}
+#[test]
+fn function_arity_is_enforced_during_validation_and_evaluation() {
+    for expression in [
+        "always(true)",
+        "cancelled('job')",
+        "contains('only-one')",
+        "fromJSON()",
+        "join('a', '-', 'extra')",
+        "hashFiles()",
+    ] {
+        assert!(
+            matches!(
+                validate_expression(expression),
+                Err(ExpressionError::InvalidFunctionArity { .. })
+            ),
+            "validation accepted {expression}"
+        );
+        assert!(
+            matches!(
+                eval_expression(expression, &Context::default()),
+                Err(ExpressionError::InvalidFunctionArity { .. })
+            ),
+            "evaluation accepted {expression}"
+        );
+    }
+}
+
+#[test]
+fn handles_escaped_single_quotes_in_literals() {
+    let context = Context::default();
+    assert_eq!(
+        eval_expression("'It''s a string'", &context).unwrap(),
+        Value::String("It's a string".to_owned())
+    );
+    assert_eq!(
+        eval_expression("''", &context).unwrap(),
+        Value::String("".to_owned())
+    );
+    assert_eq!(
+        eval_expression("''''", &context).unwrap(),
+        Value::String("'".to_owned())
+    );
+    assert_eq!(
+        eval_expression("'a''b''c'", &context).unwrap(),
+        Value::String("a'b'c".to_owned())
+    );
+}
+
+#[test]
+fn fromjson_wildcard_member_access() {
+    let context = Context::default();
+    // fromJSON('...').*.name — member access on function call result
+    assert_eq!(
+        eval_expression(
+            r#"join(fromJSON('[{"name":"alpha"},{"name":"beta"},{"name":"gamma"}]').*.name, ',')"#,
+            &context
+        )
+        .unwrap(),
+        Value::String("alpha,beta,gamma".to_owned())
+    );
+    // Simple member access on fromJSON
+    assert_eq!(
+        eval_expression(r#"fromJSON('{"a":{"b":"deep"}}').a.b"#, &context).unwrap(),
+        Value::String("deep".to_owned())
+    );
+    // Bracket access on fromJSON
+    assert_eq!(
+        eval_expression(r#"fromJSON('{"x":"val"}')['x']"#, &context).unwrap(),
+        Value::String("val".to_owned())
+    );
+}
+
+#[test]
+fn chained_bracket_access_on_from_json() {
+    let context = Context::default();
+    // Chained bracket: fromJSON(...)['a']['b']['c']
+    assert_eq!(
+        eval_expression(
+            r#"fromJSON('{"a":{"b":{"c":"deep"}}}')['a']['b']['c']"#,
+            &context,
+        )
+        .unwrap(),
+        Value::String("deep".to_owned())
+    );
+    // Mixed dot and bracket
+    assert_eq!(
+        eval_expression(r#"fromJSON('{"a":{"b":{"c":"deep"}}}').a.b.c"#, &context,).unwrap(),
+        Value::String("deep".to_owned())
+    );
+}
+
+#[test]
+fn hashfiles_follow_symlinks_flag() {
+    // hashFiles('--follow-symbolic-links', 'pattern') should parse
+    // the flag without treating it as a glob pattern.
+    // Without a workspace_dir, hashFiles returns "" regardless, but this
+    // confirms the flag parsing doesn't cause errors.
+    let context = Context::default();
+    assert_eq!(
+        eval_expression(
+            "hashFiles('--follow-symbolic-links', 'Cargo.toml')",
+            &context
+        )
+        .unwrap(),
+        Value::String(String::new())
+    );
+    // Without the flag — same result (no workspace)
+    assert_eq!(
+        eval_expression("hashFiles('Cargo.toml')", &context).unwrap(),
+        Value::String(String::new())
+    );
+}
+
+#[test]
+fn hashfiles_binary_digest_matches_official_algorithm() {
+    // Verify binary digest concatenation.
+    // Official hashFiles.ts concatenates raw 32-byte SHA-256 digests before hashing.
+    // Concatenating hex strings instead of the raw digests uses the wrong algorithm and produces different cache keys.
+    use sha2::{Digest, Sha256};
+
+    // Use a unique temp dir under /tmp
+    let dir = std::path::Path::new("/tmp/preloop-hashfiles-test");
+    std::fs::create_dir_all(dir).unwrap();
+
+    // Write two known files
+    let a = dir.join("a.txt");
+    let b = dir.join("b.txt");
+    std::fs::write(&a, b"hello preloop").unwrap();
+    std::fs::write(&b, b"hello world").unwrap();
+
+    let ctx = Context::default().with_workspace(dir.to_string_lossy().to_string());
+
+    // Single file: hashFiles('a.txt') should equal SHA256(binary concat of SHA256(content))
+    let ha = eval_expression("hashFiles('a.txt')", &ctx).unwrap();
+    let expected_a: String = {
+        let inner = Sha256::digest(b"hello preloop");
+        let mut combined: Vec<u8> = Vec::new();
+        combined.extend_from_slice(&inner);
+        format!("{:x}", Sha256::digest(&combined))
+    };
+    assert_eq!(
+        ha,
+        Value::String(expected_a.clone()),
+        "single-file hash mismatch"
+    );
+
+    // Must be 64 lowercase hex chars
+    assert_eq!(expected_a.len(), 64);
+    assert!(expected_a.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // Different files must produce different hashes
+    let hb = eval_expression("hashFiles('b.txt')", &ctx).unwrap();
+    assert_ne!(ha, hb, "distinct files must produce distinct hashes");
+
+    // hashFiles with no-match pattern returns ""
+    let empty = eval_expression("hashFiles('nonexistent.txt')", &ctx).unwrap();
+    assert_eq!(
+        empty,
+        Value::String(String::new()),
+        "no-match must return empty string"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+proptest! {
+    #[test]
+    fn string_equality_is_case_insensitive(value in "[A-Za-z]{1,24}") {
+        let expr = format!("'{}' == '{}'", value, value.to_ascii_uppercase());
+        prop_assert_eq!(eval_expression(&expr, &Context::default()).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn non_empty_strings_are_truthy(value in ".{1,32}") {
+        prop_assert!(is_truthy(&Value::String(value)));
+    }
+}
+
+// --- ConditionFunctionsL0 coverage ---
+
+#[test]
+fn condition_always_returns_true_regardless_of_status() {
+    // all-success
+    assert!(
+        eval_bool(
+            "always()",
+            &Context::default().with_status(true, false, false)
+        )
+        .unwrap()
+    );
+    // failure
+    assert!(
+        eval_bool(
+            "always()",
+            &Context::default().with_status(false, true, false)
+        )
+        .unwrap()
+    );
+    // cancelled
+    assert!(
+        eval_bool(
+            "always()",
+            &Context::default().with_status(false, false, true)
+        )
+        .unwrap()
+    );
+    // all-false (edge case: no status set)
+    assert!(
+        eval_bool(
+            "always()",
+            &Context::default().with_status(false, false, false)
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn condition_success_true_only_when_success_flag_set() {
+    assert!(
+        eval_bool(
+            "success()",
+            &Context::default().with_status(true, false, false)
+        )
+        .unwrap()
+    );
+    assert!(
+        !eval_bool(
+            "success()",
+            &Context::default().with_status(false, true, false)
+        )
+        .unwrap()
+    );
+    assert!(
+        !eval_bool(
+            "success()",
+            &Context::default().with_status(false, false, true)
+        )
+        .unwrap()
+    );
+    assert!(
+        !eval_bool(
+            "success()",
+            &Context::default().with_status(false, false, false)
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn condition_failure_true_only_when_failure_flag_set() {
+    assert!(
+        !eval_bool(
+            "failure()",
+            &Context::default().with_status(true, false, false)
+        )
+        .unwrap()
+    );
+    assert!(
+        eval_bool(
+            "failure()",
+            &Context::default().with_status(false, true, false)
+        )
+        .unwrap()
+    );
+    assert!(
+        !eval_bool(
+            "failure()",
+            &Context::default().with_status(false, false, true)
+        )
+        .unwrap()
+    );
+    assert!(
+        !eval_bool(
+            "failure()",
+            &Context::default().with_status(false, false, false)
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn condition_cancelled_true_only_when_cancelled_flag_set() {
+    assert!(
+        !eval_bool(
+            "cancelled()",
+            &Context::default().with_status(true, false, false)
+        )
+        .unwrap()
+    );
+    assert!(
+        !eval_bool(
+            "cancelled()",
+            &Context::default().with_status(false, true, false)
+        )
+        .unwrap()
+    );
+    assert!(
+        eval_bool(
+            "cancelled()",
+            &Context::default().with_status(false, false, true)
+        )
+        .unwrap()
+    );
+    assert!(
+        !eval_bool(
+            "cancelled()",
+            &Context::default().with_status(false, false, false)
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn condition_functions_combined_state() {
+    // failure+cancelled: both true simultaneously
+    let ctx = Context::default().with_status(false, true, true);
+    assert!(!eval_bool("success()", &ctx).unwrap());
+    assert!(eval_bool("failure()", &ctx).unwrap());
+    assert!(eval_bool("cancelled()", &ctx).unwrap());
+    assert!(eval_bool("always()", &ctx).unwrap());
+
+    // Compound expressions
+    assert!(eval_bool("failure() || cancelled()", &ctx).unwrap());
+    assert!(!eval_bool("success() && !failure()", &ctx).unwrap());
+}
+#[test]
+fn format_with_non_ascii_in_template() {
+    let ctx = Context::default();
+    // em dash U+2014 inside the format template literal
+    let r = eval_expression(
+        "format('only runs for ubuntu-latest \u{2014} os={0}', 'ubuntu-latest')",
+        &ctx,
+    );
+    assert_eq!(
+        r.unwrap(),
+        serde_json::Value::String(
+            "only runs for ubuntu-latest \u{2014} os=ubuntu-latest".to_string()
+        )
+    );
+}
+
+#[test]
+fn format_with_matrix_context() {
+    let mut ctx = Context::default();
+    ctx.insert("matrix", serde_json::json!({"os": "ubuntu-latest"}));
+    let r = eval_expression(
+        "format('echo \"only runs for ubuntu-latest \u{2014} os={0}\"', matrix.os)",
+        &ctx,
+    );
+    assert_eq!(
+        r.unwrap(),
+        serde_json::Value::String(
+            "echo \"only runs for ubuntu-latest \u{2014} os=ubuntu-latest\"".to_string()
+        )
+    );
+}
+
+#[test]
+fn format_with_multiline_template() {
+    let mut ctx = Context::default();
+    ctx.insert(
+        "matrix",
+        serde_json::json!({"platform": {"name": "Linux ARM64", "target": "aarch64"}}),
+    );
+    // Matches what GHA sends: format string with real newlines
+    let r = eval_expression(
+        "format('echo \"name={0}\"\necho \"target={1}\"\n', matrix.platform.name, matrix.platform.target)",
+        &ctx,
+    );
+    assert_eq!(
+        r.unwrap(),
+        serde_json::Value::String(
+            "echo \"name=Linux ARM64\"\necho \"target=aarch64\"\n".to_string()
+        )
+    );
+}
+
+/// GH-MATRIX-INT: integer matrix values must stringify as "1" not "1.0".
+/// Tests the `string_value` path used by `format()` and other string functions.
+#[test]
+fn matrix_integer_renders_without_decimal_suffix() {
+    let mut ctx = Context::default();
+    // Simulate matrix.val = 1 as f64 (what serde_yaml 0.9 may produce)
+    ctx.insert("matrix", serde_json::json!({"val": 1.0_f64}));
+
+    // format() goes through string_value — must produce "1" not "1.0"
+    let result = eval_expression("format('{0}', matrix.val)", &ctx).unwrap();
+    assert_eq!(
+        result,
+        serde_json::Value::String("1".to_owned()),
+        "f64(1.0) must render as '1' via format()"
+    );
+
+    // join() also goes through string_value
+    ctx.insert(
+        "matrix",
+        serde_json::json!({"vals": [1.0_f64, 2.0_f64, 3.0_f64]}),
+    );
+    let joined = eval_expression("join(matrix.vals, ',')", &ctx).unwrap();
+    assert_eq!(
+        joined,
+        serde_json::Value::String("1,2,3".to_owned()),
+        "f64 array join must produce '1,2,3' not '1.0,2.0,3.0'"
+    );
+}
+
+/// Genuine floats (1.5) must not be truncated.
+#[test]
+fn matrix_genuine_float_preserved() {
+    let mut ctx = Context::default();
+    ctx.insert("matrix", serde_json::json!({"val": 1.5_f64}));
+    let result = eval_expression("matrix.val", &ctx).unwrap();
+    let s = match &result {
+        serde_json::Value::String(st) => st.clone(),
+        other => other.to_string(),
+    };
+    assert!(s.contains('.'), "1.5 must retain decimal: got {s}");
+}
+
+mod official_semantics {
+    use super::*;
+
+    fn assert_bool(expression: &str, expected: bool) {
+        let actual = eval_expression(expression, &Context::default())
+            .unwrap_or_else(|error| panic!("{expression:?} should evaluate: {error}"));
+        assert_eq!(actual, Value::Bool(expected), "expression: {expression}");
+    }
+
+    #[test]
+    fn starts_with_and_ends_with_are_case_insensitive() {
+        assert_bool("startsWith('Hello world', 'HELLO')", true);
+        assert_bool("endsWith('Hello world', 'WORLD')", true);
+        assert_bool("startsWith('Hello world', 'WORLD')", false);
+        assert_bool("endsWith('Hello world', 'HELLO')", false);
+    }
+
+    #[test]
+    fn same_kind_string_equality_is_case_insensitive() {
+        assert_bool("'Alpha-Beta' == 'aLPHA-bETA'", true);
+        assert_bool("'Alpha-Beta' != 'aLPHA-bETA'", false);
+        assert_bool("'Alpha-Beta' == 'Alpha-Gamma'", false);
+    }
+
+    #[test]
+    fn string_string_comparison_never_coerces_to_numbers() {
+        // Live-verified against GitHub-hosted runners (2026-09-19):
+        // official compares string-string ordinally, never numerically.
+        assert_bool("'10' > '9'", false);
+        assert_bool("'2' > '10'", true);
+        assert_bool("'10' < '9'", true);
+        assert_bool("'2' < '10'", false);
+        assert_bool("'10' >= '9'", false);
+        assert_bool("'2' <= '10'", false);
+        assert_bool("'10' <= '9'", true);
+    }
+
+    #[test]
+    fn unicode_case_insensitive_comparison() {
+        // Live-verified: official uses OrdinalIgnoreCase (Unicode-aware).
+        assert_bool("'Ä' == 'ä'", true);
+        assert_bool("'ÄBC' == 'äbc'", true);
+        assert_bool("contains('ÄBC', 'ä')", true);
+        assert_bool("startsWith('ÄBC', 'äb')", true);
+        assert_bool("endsWith('ABCÄ', 'cä')", true);
+    }
+
+    #[test]
+    fn ordinal_ignore_case_uses_simple_case_mapping() {
+        // .NET OrdinalIgnoreCase maps each character through the simple
+        // (non-expanding) uppercase table. A lowercasing implementation
+        // would wrongly equate these.
+        // 'İ' (U+0130) lowercases to 'i' + U+0307, but OrdinalIgnoreCase
+        // keeps it a single character: it must NOT equal the two-char string.
+        assert_bool("'İ' == 'i\u{0307}'", false);
+        assert_bool("'İ' != 'i\u{0307}'", true);
+        // Greek sigmas: final 'ς' (U+03C2), medial 'σ' (U+03C3) and capital
+        // 'Σ' (U+03A3) all map to 'Σ'.
+        assert_bool("'ς' == 'σ'", true);
+        assert_bool("'ς' == 'Σ'", true);
+        assert_bool("'σ' == 'Σ'", true);
+        assert_bool("startsWith('Σίσυφος', 'σίσυ')", true);
+        assert_bool("endsWith('Ὀδυσσεύς', 'Σ')", true);
+        assert_bool("contains('Ὀδυσσεύς', 'σ')", true);
+        // 'ß' (U+00DF) has no single-character uppercase: it must NOT equal "SS".
+        assert_bool("'ß' == 'SS'", false);
+        assert_bool("contains('STRASSE', 'ß')", false);
+        assert_bool("contains('straße', 'SS')", false);
+    }
+
+    #[test]
+    fn ordinal_ignore_case_orders_by_code_point() {
+        // Mixed BMP / non-BMP ordering follows UTF-16 code unit order.
+        assert_bool("'a' < 'Ā'", true); // U+0061 < U+0100
+        assert_bool("'Ā' > 'a'", true);
+        assert_bool("'Ā' < '𐀀'", true); // U+0100 < U+10000
+        assert_bool("'z' < 'ä'", true); // U+007A < U+00E4 after case mapping
+    }
+
+    #[test]
+    fn fromjson_accepts_newtonsoft_extensions() {
+        // The official runner parses fromJSON through Newtonsoft's
+        // JsonTextReader, which accepts comments, single-quoted strings,
+        // and trailing commas. In expression syntax a literal single quote
+        // is written ''.
+        let value =
+            eval_expression("fromJSON('{''key'': ''value''}')", &Context::default()).unwrap();
+        assert_eq!(value, json!({"key": "value"}));
+        let value = eval_expression("fromJSON('{\"a\": 1,}')", &Context::default()).unwrap();
+        assert_eq!(value, json!({"a": 1}));
+        let value =
+            eval_expression("fromJSON('{\"a\": 1, /* comment */}')", &Context::default()).unwrap();
+        assert_eq!(value, json!({"a": 1}));
+        let value = eval_expression("fromJSON('[1, 2, ]')", &Context::default()).unwrap();
+        assert_eq!(value, json!([1, 2]));
+        // A comma is trailing only after a value; leading and misplaced
+        // commas remain invalid.
+        for expression in [
+            "fromJSON('{,}')",
+            "fromJSON('[,]')",
+            "fromJSON('{\"a\":,}')",
+            "fromJSON('[1,,]')",
+        ] {
+            assert!(
+                eval_expression(expression, &Context::default()).is_err(),
+                "expression should reject misplaced comma: {expression}"
+            );
+        }
+        // Anything beyond the supported extensions is still an error.
+        assert!(eval_expression("fromJSON('{key: 1}')", &Context::default()).is_err());
+        assert!(eval_expression("fromJSON('not json')", &Context::default()).is_err());
+    }
+
+    #[test]
+    fn fromjson_errors_on_invalid_json() {
+        // Live-verified: official fails the job on invalid JSON.
+        let result = eval_expression("fromJSON('not json')", &Context::default());
+        assert!(result.is_err(), "fromJSON('not json') should error");
+    }
+
+    #[test]
+    fn mixed_kind_coercion_uses_official_numeric_rules() {
+        let cases = [
+            ("0 == ''", true),
+            ("null == 0", true),
+            ("true == 1", true),
+            ("false == 0", true),
+            ("'1' == 1.0", true),
+            ("null == ''", true),
+            ("'  1  ' == 1", true),
+            ("'0x10' == 16", true),
+            ("'0o10' == 8", true),
+            ("'Infinity' == 1", false),
+            ("'Infinity' > 1", true),
+            ("'-Infinity' < 0", true),
+            ("'abc' == 0", false),
+            ("'NaN' == 0", false),
+            ("'NaN' != 0", true),
+            ("'inf' != 0", true),
+        ];
+
+        for (expression, expected) in cases {
+            assert_bool(expression, expected);
+        }
+    }
+
+    #[test]
+    fn arrays_and_objects_are_truthy_even_when_empty() {
+        let cases = [
+            ("fromJSON('[]')", true),
+            ("fromJSON('[1]')", true),
+            ("fromJSON('{}')", true),
+            ("fromJSON('{\"key\":\"value\"}')", true),
+        ];
+
+        for (expression, expected) in cases {
+            assert_eq!(
+                eval_bool(expression, &Context::default()).unwrap(),
+                expected,
+                "expression: {expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn contains_array_uses_abstract_equality() {
+        let cases = [
+            ("contains(fromJSON('[1, 2]'), '1')", true),
+            ("contains(fromJSON('[null]'), '')", true),
+            ("contains(fromJSON('[true]'), '1')", true),
+            ("contains(fromJSON('[1, 2]'), '3')", false),
+        ];
+
+        for (expression, expected) in cases {
+            assert_bool(expression, expected);
+        }
+    }
+
+    #[test]
+    fn format_escaped_braces_are_preserved() {
+        let result = eval_expression("format('{{literal}}')", &Context::default()).unwrap();
+        assert_eq!(result, Value::String("{literal}".to_owned()));
+    }
+
+    #[test]
+    fn format_malformed_template_errors() {
+        for expression in [
+            "format('{', 'value')",
+            "format('value}', 'value')",
+            "format('{x}', 'value')",
+        ] {
+            assert!(
+                eval_expression(expression, &Context::default()).is_err(),
+                "malformed template should fail: {expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_missing_index_argument_errors() {
+        for expression in ["format('{1}', 'value')", "format('{256}', 'value')"] {
+            assert!(
+                eval_expression(expression, &Context::default()).is_err(),
+                "invalid argument index should fail: {expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_invalid_specifier_errors() {
+        assert!(
+            eval_expression("format('{0:bogus}', 'value')", &Context::default()).is_err(),
+            "unsupported format specifier should fail"
+        );
+    }
+
+    #[test]
+    fn hash_files_unknown_leading_flag_errors() {
+        let workspace = std::env::temp_dir().join("preloop-official-semantics-hashfiles");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("x"), b"x").unwrap();
+
+        let context = Context::default().with_workspace(workspace.to_string_lossy().into_owned());
+        let result = eval_expression("hashFiles('--bogus-flag', 'x')", &context);
+
+        let _ = std::fs::remove_dir_all(&workspace);
+        assert!(result.is_err(), "unknown hashFiles flags must fail");
+    }
+    /// Absolute patterns are rejected outright, never used as-is —
+    /// otherwise hashFiles('/etc/passwd') is a file-content oracle for
+    /// anything the runner can read. Silent remapping would hide intent.
+    #[test]
+    fn hash_files_absolute_pattern_rejected() {
+        let base =
+            std::env::temp_dir().join(format!("preloop-hashfiles-r17-{}", std::process::id()));
+        let workspace = base.join("ws");
+        std::fs::create_dir_all(workspace.join("sub")).unwrap();
+        std::fs::write(
+            workspace.join("sub").join("secret.txt"),
+            b"workspace secret",
+        )
+        .unwrap();
+        let context = Context::default().with_workspace(workspace.to_string_lossy().into_owned());
+
+        for expr in ["hashFiles('/sub/secret.txt')", "hashFiles('/etc/hostname')"] {
+            let result = eval_expression(expr, &context);
+            assert!(
+                matches!(result, Err(ExpressionError::HashFilesDisallowedPattern(_))),
+                "absolute pattern must be rejected, got {result:?}: {expr}"
+            );
+        }
+
+        // Workspace-relative patterns still work.
+        let hashed = eval_expression("hashFiles('sub/secret.txt')", &context).unwrap();
+        assert!(
+            matches!(&hashed, Value::String(s) if s.len() == 64),
+            "relative pattern should still hash, got {hashed:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `../` traversal in a pattern is rejected outright, not silently
+    /// skipped — the workflow author must see the failure.
+    #[test]
+    fn hash_files_dotdot_traversal_rejected() {
+        let base =
+            std::env::temp_dir().join(format!("preloop-hashfiles-r17b-{}", std::process::id()));
+        let workspace = base.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(base.join("outside.txt"), b"must not be hashed").unwrap();
+        let context = Context::default().with_workspace(workspace.to_string_lossy().into_owned());
+
+        for expr in [
+            "hashFiles('../outside.txt')",
+            "hashFiles('sub/../../outside.txt')",
+        ] {
+            let result = eval_expression(expr, &context);
+            assert!(
+                matches!(result, Err(ExpressionError::HashFilesDisallowedPattern(_))),
+                ".. traversal must be rejected, got {result:?}: {expr}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+    /// Windows-native traversal and absolute forms are rejected on
+    /// Windows, where backslash is a separator and prefixes/roots escape.
+    /// (On Unix these are literal filenames and correctly pass the guard.)
+    #[cfg(windows)]
+    #[test]
+    fn hash_files_windows_traversal_rejected() {
+        let base =
+            std::env::temp_dir().join(format!("preloop-hashfiles-r17w-{}", std::process::id()));
+        let workspace = base.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let context = Context::default().with_workspace(workspace.to_string_lossy().into_owned());
+
+        for expr in [
+            "hashFiles('..\\outside.txt')",
+            "hashFiles('C:\\outside.txt')",
+            "hashFiles('\\outside.txt')",
+        ] {
+            let result = eval_expression(expr, &context);
+            assert!(
+                matches!(result, Err(ExpressionError::HashFilesDisallowedPattern(_))),
+                "Windows escape must be rejected, got {result:?}: {expr}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The traversal budget bounds visited entries, not just retained
+    /// matches. 100k+ skipped directories would otherwise burn glob work
+    /// without ever tripping the 10k retained-file cap.
+    #[test]
+    fn hash_files_traversal_budget_bounds_skipped_entries() {
+        let base =
+            std::env::temp_dir().join(format!("preloop-hashfiles-r17f-{}", std::process::id()));
+        let workspace = base.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        for i in 0..100_050 {
+            std::fs::create_dir(workspace.join(format!("d{i}"))).unwrap();
+        }
+        let context = Context::default().with_workspace(workspace.to_string_lossy().into_owned());
+
+        let result = eval_expression("hashFiles('*')", &context);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(
+            matches!(
+                result,
+                Err(ExpressionError::HashFilesTraversalLimit(100_000))
+            ),
+            "expected HashFilesTraversalLimit error, got {result:?}"
+        );
+    }
+    /// Opened handles are re-verified against the workspace root: an entry
+    /// swapped for an escaping symlink between the pre-open gate and open
+    /// must fail verification on the fresh handle (Linux `/proc/self/fd`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hash_files_opened_handle_reverified() {
+        use crate::evaluator::handle_under_root;
+
+        let base =
+            std::env::temp_dir().join(format!("preloop-hashfiles-r17h-{}", std::process::id()));
+        let workspace = base.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("real.txt"), b"inside").unwrap();
+        std::fs::write(base.join("outside.txt"), b"outside").unwrap();
+        let root = std::fs::canonicalize(&workspace).unwrap();
+
+        // In-workspace handle verifies.
+        let inside = std::fs::File::open(workspace.join("real.txt")).unwrap();
+        assert!(handle_under_root(&inside, &root));
+        // Outside handle does not.
+        let outside = std::fs::File::open(base.join("outside.txt")).unwrap();
+        assert!(!handle_under_root(&outside, &root));
+
+        // Race simulation: swap the entry for an escaping symlink after the
+        // gate would have passed. A fresh open follows it outside and must
+        // fail verification, so no bytes are ever hashed from it.
+        std::fs::remove_file(workspace.join("real.txt")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside.txt"), workspace.join("real.txt")).unwrap();
+        let swapped = std::fs::File::open(workspace.join("real.txt")).unwrap();
+        assert!(
+            !handle_under_root(&swapped, &root),
+            "swapped entry verified: outside bytes would be hashed"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Hashing more than 100 MiB of input fails with HashFilesTooLarge
+    /// instead of loading it all into memory.
+    #[test]
+    fn hash_files_total_byte_cap_rejects_huge_input() {
+        let base =
+            std::env::temp_dir().join(format!("preloop-hashfiles-r17d-{}", std::process::id()));
+        let workspace = base.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        // Sparse file: instant to create, reads as zeros.
+        let big = std::fs::File::create(workspace.join("big.bin")).unwrap();
+        big.set_len(101 * 1024 * 1024).unwrap();
+        drop(big);
+        let context = Context::default().with_workspace(workspace.to_string_lossy().into_owned());
+
+        let result = eval_expression("hashFiles('big.bin')", &context);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(
+            matches!(result, Err(ExpressionError::HashFilesTooLarge(_))),
+            "expected HashFilesTooLarge, got {result:?}"
+        );
+    }
+
+    /// Symlinks escaping the workspace are skipped even with
+    /// --follow-symbolic-links; in-workspace symlinks are only followed
+    /// when the flag is passed.
+    #[cfg(unix)]
+    #[test]
+    fn hash_files_escaping_symlink_skipped() {
+        let base =
+            std::env::temp_dir().join(format!("preloop-hashfiles-r17c-{}", std::process::id()));
+        let workspace = base.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("real.txt"), b"real").unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", workspace.join("escape-link")).unwrap();
+        std::os::unix::fs::symlink(workspace.join("real.txt"), workspace.join("inner-link"))
+            .unwrap();
+        let context = Context::default().with_workspace(workspace.to_string_lossy().into_owned());
+
+        // Escaping symlink is never hashed, flag or not.
+        for expr in [
+            "hashFiles('escape-link')",
+            "hashFiles('--follow-symbolic-links', 'escape-link')",
+        ] {
+            let result = eval_expression(expr, &context).unwrap();
+            assert_eq!(
+                result,
+                Value::String(String::new()),
+                "escaping symlink must be skipped: {expr}"
+            );
+        }
+
+        // In-workspace symlink: skipped without the flag, hashed with it.
+        let no_flag = eval_expression("hashFiles('inner-link')", &context).unwrap();
+        assert_eq!(no_flag, Value::String(String::new()));
+        let with_flag = eval_expression(
+            "hashFiles('--follow-symbolic-links', 'inner-link')",
+            &context,
+        )
+        .unwrap();
+        assert!(
+            matches!(&with_flag, Value::String(s) if s.len() == 64),
+            "in-workspace symlink should be followed with the flag"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+    /// Symlink aliases to the same target hash per matched path
+    /// like official — canonical dedup must not collapse them into one entry.
+    #[cfg(unix)]
+    #[test]
+    fn hash_files_symlink_alias_hashes_per_match() {
+        use sha2::{Digest, Sha256};
+        let base =
+            std::env::temp_dir().join(format!("preloop-hashfiles-r17e-{}", std::process::id()));
+        let workspace = base.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("real.txt"), b"real").unwrap();
+        std::os::unix::fs::symlink(workspace.join("real.txt"), workspace.join("inner-link"))
+            .unwrap();
+        let context = Context::default().with_workspace(workspace.to_string_lossy().into_owned());
+
+        let single = eval_expression("hashFiles('real.txt')", &context).unwrap();
+        let aliased = eval_expression(
+            "hashFiles('--follow-symbolic-links', 'real.txt', 'inner-link')",
+            &context,
+        )
+        .unwrap();
+        let Value::String(single_hex) = single else {
+            panic!("expected string hash");
+        };
+        let Value::String(aliased_hex) = aliased else {
+            panic!("expected string hash");
+        };
+        assert_eq!(single_hex.len(), 64);
+        assert_eq!(aliased_hex.len(), 64);
+        assert_ne!(
+            single_hex, aliased_hex,
+            "alias + target must hash as two matches, not dedup to one"
+        );
+        // Both matches hold identical bytes, so order is irrelevant: the
+        // outer hash must equal SHA256(digest || digest).
+        let inner = Sha256::digest(b"real");
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&inner);
+        combined.extend_from_slice(&inner);
+        let expected = format!("{:x}", Sha256::digest(&combined));
+        assert_eq!(aliased_hex, expected);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Matching more than the file cap is a clear error, not silent
+    /// truncation or unbounded hashing.
+    #[test]
+    fn hash_files_too_many_files_errors() {
+        let base =
+            std::env::temp_dir().join(format!("preloop-hashfiles-r17g-{}", std::process::id()));
+        let workspace = base.join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        for i in 0..10_001 {
+            std::fs::write(workspace.join(format!("f{i}.txt")), b"x").unwrap();
+        }
+        let context = Context::default().with_workspace(workspace.to_string_lossy().into_owned());
+
+        let result = eval_expression("hashFiles('*.txt')", &context);
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(
+            matches!(
+                result,
+                Err(crate::ExpressionError::HashFilesTooManyFiles(10_000))
+            ),
+            "expected HashFilesTooManyFiles error, got {result:?}"
+        );
+    }
+
+    /// Deeply nested parens overflow the parser's stack instead of returning
+    /// an error: 100k `(` from a 200 KB expression aborted the process before
+    /// the depth guard existed. The guard must reject, not crash.
+    #[test]
+    fn deeply_nested_parens_error_instead_of_overflowing() {
+        let n = 100_000;
+        let expr = format!("{}1{}", "(".repeat(n), ")".repeat(n));
+        assert!(matches!(
+            validate_expression(&expr),
+            Err(ExpressionError::TooDeep(_))
+        ));
+    }
+
+    /// `!` recurses through a different parse function than parens; it needs
+    /// the same ceiling.
+    #[test]
+    fn deeply_nested_negations_error_instead_of_overflowing() {
+        let expr = format!("{}true", "!".repeat(100_000));
+        assert!(matches!(
+            validate_expression(&expr),
+            Err(ExpressionError::TooDeep(_))
+        ));
+    }
+
+    /// Expressions within the ceiling must keep working unchanged.
+    #[test]
+    fn expressions_within_depth_limit_still_parse() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // `parse_expr` consumes one level for the root, so this is the
+        // largest accepted parenthesized/unary nesting.
+        let n = MAX_EXPRESSION_DEPTH - 1;
+        let expr = format!("{}true{}", "(".repeat(n), ")".repeat(n));
+        assert!(eval_bool(&expr, &Context::default()).unwrap());
+
+        let unary_n = n - (n % 2);
+        let negated = format!("{}true", "!".repeat(unary_n));
+        assert!(eval_bool(&negated, &Context::default()).unwrap());
+
+        let too_deep = format!(
+            "{}true{}",
+            "(".repeat(MAX_EXPRESSION_DEPTH),
+            ")".repeat(MAX_EXPRESSION_DEPTH)
+        );
+        assert!(matches!(
+            validate_expression(&too_deep),
+            Err(ExpressionError::TooDeep(_))
+        ));
+
+        let too_deep_negated = format!("{}true", "!".repeat(MAX_EXPRESSION_DEPTH));
+        assert!(matches!(
+            validate_expression(&too_deep_negated),
+            Err(ExpressionError::TooDeep(_))
+        ));
+    }
+
+    /// Depth of a parsed tree, measured by walking it. This cross-checks the
+    /// depth the parser tracks while it builds each node.
+    fn ast_depth(expr: &crate::ast::Expr) -> usize {
+        use crate::ast::Expr;
+        match expr {
+            Expr::Literal(_) | Expr::Path(_) => 1,
+            Expr::UnaryNot(inner) | Expr::MemberAccess { expr: inner, .. } => 1 + ast_depth(inner),
+            Expr::Binary { left, right, .. } => 1 + ast_depth(left).max(ast_depth(right)),
+            Expr::Index { base, key } => 1 + ast_depth(base).max(ast_depth(key)),
+            Expr::Call { args, .. } => 1 + args.iter().map(ast_depth).max().unwrap_or(0),
+        }
+    }
+
+    /// Parses `input`, checks that the tree it builds stays within the
+    /// ceiling, and returns that tree's depth.
+    fn accepted_depth(input: &str) -> usize {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        if let Err(error) = validate_expression(input) {
+            panic!("{input:?} should parse: {error}");
+        }
+        let depth = ast_depth(&crate::parse_cached(input).unwrap());
+        assert!(
+            depth <= MAX_EXPRESSION_DEPTH,
+            "{input:?} built a tree of depth {depth}"
+        );
+        depth
+    }
+
+    /// Asserts that `input` is refused while parsing with `TooDeep`.
+    fn assert_too_deep(input: &str) {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        assert_eq!(
+            validate_expression(input),
+            Err(ExpressionError::TooDeep(MAX_EXPRESSION_DEPTH)),
+            "{input:?} should be refused while parsing"
+        );
+    }
+
+    #[test]
+    fn binary_chain_depth_is_exact_at_the_ceiling() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // `true` is one leaf and every operator adds one level, whichever
+        // operator it is.
+        for operator in ["||", "&&", "=="] {
+            let link = format!("{operator}true");
+            let within = format!("true{}", link.repeat(MAX_EXPRESSION_DEPTH - 1));
+            assert_eq!(accepted_depth(&within), MAX_EXPRESSION_DEPTH);
+            let over = format!("true{}", link.repeat(MAX_EXPRESSION_DEPTH));
+            assert_too_deep(&over);
+        }
+    }
+
+    #[test]
+    fn computed_index_chain_depth_is_exact_at_the_ceiling() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // `github` is one leaf and each `[('x')]` wraps the chain in one Index.
+        let within = format!("github{}", "[('x')]".repeat(MAX_EXPRESSION_DEPTH - 1));
+        assert_eq!(accepted_depth(&within), MAX_EXPRESSION_DEPTH);
+        assert!(eval_expression(&within, &Context::default()).is_ok());
+
+        let over = format!("github{}", "[('x')]".repeat(MAX_EXPRESSION_DEPTH));
+        assert_too_deep(&over);
+
+        // The original crash input: 500 bracket pairs must error, not overflow.
+        assert_too_deep(&format!("github{}", "[('x')]".repeat(500)));
+    }
+
+    #[test]
+    fn call_suffix_chain_depth_is_exact_at_the_ceiling() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // A call is one level over its literal argument, and each folded key
+        // adds one more on top of the call.
+        let within = format!(
+            "toJSON('{{}}'){}",
+            "[('x')]".repeat(MAX_EXPRESSION_DEPTH - 2)
+        );
+        assert_eq!(accepted_depth(&within), MAX_EXPRESSION_DEPTH);
+
+        let over = format!(
+            "toJSON('{{}}'){}",
+            "[('x')]".repeat(MAX_EXPRESSION_DEPTH - 1)
+        );
+        assert_too_deep(&over);
+    }
+
+    #[test]
+    fn nested_call_wrapped_chains_count_the_whole_tree() {
+        // Each round wraps the tree so far in a call and folds 80 keys onto
+        // it, so the tree would be 82 levels deep after one round and 163
+        // after two. Recursion stays shallow throughout, so only the tree's
+        // own depth refuses it.
+        let mut expr = "github".to_owned();
+        for _ in 0..3 {
+            expr = format!("format('x', {expr}){}", "[('x')]".repeat(80));
+        }
+        assert_too_deep(&expr);
+    }
+
+    #[test]
+    fn chain_in_a_computed_key_carries_its_depth_outward() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // The key is 101 levels deep, so indexing with it reaches 102, and
+        // every later fold adds one more.
+        let key = format!("github{}", "[('x')]".repeat(100));
+        let within = format!(
+            "github[{key}]{}",
+            "[('x')]".repeat(MAX_EXPRESSION_DEPTH - 102)
+        );
+        assert_eq!(accepted_depth(&within), MAX_EXPRESSION_DEPTH);
+
+        let over = format!(
+            "github[{key}]{}",
+            "[('x')]".repeat(MAX_EXPRESSION_DEPTH - 101)
+        );
+        assert_too_deep(&over);
+    }
+
+    #[test]
+    fn operator_chain_after_a_deep_group_counts_the_whole_tree() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // The parenthesized group is 101 levels deep; each `|| true` after it
+        // adds one level above the chain built so far.
+        let group = format!("(github{})", "[('x')]".repeat(100));
+        let within = format!("{group}{}", " || true".repeat(MAX_EXPRESSION_DEPTH - 101));
+        assert_eq!(accepted_depth(&within), MAX_EXPRESSION_DEPTH);
+
+        let over = format!("{group}{}", " || true".repeat(MAX_EXPRESSION_DEPTH - 100));
+        assert_too_deep(&over);
+    }
+
+    #[test]
+    fn mixed_call_index_and_operator_branches_share_one_ceiling() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // The argument is 102 levels deep (a 101-level group under `||`), so
+        // the call is 103 and each fold after it adds one more.
+        let argument = format!("(github{}) || true", "[('x')]".repeat(100));
+        let within = format!(
+            "format('x', {argument}){}",
+            "[('x')]".repeat(MAX_EXPRESSION_DEPTH - 103)
+        );
+        assert_eq!(accepted_depth(&within), MAX_EXPRESSION_DEPTH);
+
+        let over = format!(
+            "format('x', {argument}){}",
+            "[('x')]".repeat(MAX_EXPRESSION_DEPTH - 102)
+        );
+        assert_too_deep(&over);
+    }
+
+    #[test]
+    fn flat_path_reads_stay_accepted() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // Literal segments on an open path extend one flat Path, however long.
+        let dots = format!("github{}", ".ref".repeat(MAX_EXPRESSION_DEPTH * 4));
+        assert_eq!(accepted_depth(&dots), 1);
+        let keys = format!("github{}", "['ref']".repeat(MAX_EXPRESSION_DEPTH * 4));
+        assert_eq!(accepted_depth(&keys), 1);
+
+        // A call wraps once; the segments after it extend that wrapper flatly.
+        let after_call = format!("toJSON('{{}}'){}", ".ref".repeat(MAX_EXPRESSION_DEPTH * 4));
+        assert_eq!(accepted_depth(&after_call), 3);
+    }
+
+    #[test]
+    fn suffix_depth_violation_is_fatal_not_backed_off() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // A malformed key backs off, but a key past the ceiling must surface
+        // as TooDeep rather than leave a silently truncated expression.
+        let deep_key = format!(
+            "toJSON('{{}}')[{}x{}]",
+            "(".repeat(MAX_EXPRESSION_DEPTH),
+            ")".repeat(MAX_EXPRESSION_DEPTH)
+        );
+        assert_too_deep(&deep_key);
+    }
+
+    #[test]
+    fn sibling_branches_do_not_add_depth() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // Each argument sits one level below the call, however many there are.
+        let args = std::iter::repeat_n("github.ref", MAX_EXPRESSION_DEPTH)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut context = Context::default();
+        context.insert("github", json!({"ref": "refs/heads/main"}));
+        assert_eq!(
+            eval_expression(&format!("format('{{0}}', {args})"), &context).unwrap(),
+            Value::String("refs/heads/main".to_owned())
+        );
+
+        // Three branches 101 levels deep make a call 102 deep, and the same
+        // holds when each branch is an operator over a computed-key chain:
+        // siblings do not add their depths together.
+        let branch = format!("github{}", "[('x')]".repeat(100));
+        let siblings = format!("format('{{0}}', {branch}, {branch}, {branch})");
+        assert_eq!(accepted_depth(&siblings), 102);
+        let mixed = format!("(github{}) || true", "[('x')]".repeat(100));
+        let mixed_siblings = format!("format('{{0}}', {mixed}, {mixed}, {mixed})");
+        assert_eq!(accepted_depth(&mixed_siblings), 103);
+    }
+
+    /// The evaluator's own recursion ceiling: a programmatically built tree
+    /// deeper than the parser allows must still fail as `TooDeep` instead
+    /// of overflowing the stack.
+    #[test]
+    fn evaluator_rejects_programmatically_deep_trees() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+        use crate::ast::Expr;
+        use crate::evaluator::{EvalBudget, eval};
+
+        // Each `Index` level costs one `eval` entry, plus one for the leaf:
+        // 127 levels fit exactly under the ceiling, 128 do not.
+        let build = |levels: usize| {
+            let mut expr = Expr::Literal(serde_json::Value::Null);
+            for _ in 0..levels {
+                expr = Expr::Index {
+                    base: Box::new(expr),
+                    key: Box::new(Expr::Literal(json!("k"))),
+                };
+            }
+            expr
+        };
+
+        let within = build(MAX_EXPRESSION_DEPTH - 1);
+        let mut budget = EvalBudget::default();
+        assert!(
+            eval(&within, &Context::default(), &mut budget).is_ok(),
+            "a tree at the ceiling must still evaluate"
+        );
+
+        let over = build(MAX_EXPRESSION_DEPTH);
+        let mut budget = EvalBudget::default();
+        assert!(
+            matches!(
+                eval(&over, &Context::default(), &mut budget),
+                Err(ExpressionError::TooDeep(_))
+            ),
+            "a tree past the ceiling must fail, not overflow"
+        );
+    }
+
+    /// Member chains nested inside *computed* bracket keys
+    /// (`a[b[c[('k')…]]]`) are bounded by recursion: each level costs its
+    /// key's expression plus the parenthesized group around it, and a sibling
+    /// argument starts again from the call's own depth.
+    #[test]
+    fn nested_computed_keys_hit_the_recursion_ceiling() {
+        use super::expr_parser::MAX_EXPRESSION_DEPTH;
+
+        // Each `[('…')]` layer costs two recursion levels (the key and its
+        // parenthesized group), so nesting past half the ceiling must be
+        // rejected, not crash.
+        let mut expr = "x".to_owned();
+        for _ in 0..(MAX_EXPRESSION_DEPTH / 2 + 2) {
+            expr = format!("a[({expr})]");
+        }
+        assert!(
+            matches!(validate_expression(&expr), Err(ExpressionError::TooDeep(_))),
+            "nested computed-key chains must be rejected, not crash"
+        );
+
+        // Nested keys recurse one parse level each even when every key is a
+        // literal (`a[b]` is a Path only at the innermost level; `a[a[…]]`
+        // folds Index nodes), so a deep literal-key nest is also bounded.
+        let mut literal = "x".to_owned();
+        for _ in 0..(MAX_EXPRESSION_DEPTH + 2) {
+            literal = format!("a[{literal}]");
+        }
+        assert!(matches!(
+            validate_expression(&literal),
+            Err(ExpressionError::TooDeep(_))
+        ));
+
+        // A single computed key one level deep stays well within budget.
+        assert!(validate_expression("a[b['k']]").is_ok());
+        assert!(validate_expression("a[b[c['k']]]").is_ok());
+        assert!(validate_expression("a[('k')]").is_ok());
+    }
+
+    #[test]
+    fn tojson_pretty_prints_with_two_space_indent() {
+        // Live-verified against GitHub-hosted runners 2026-09-19.
+        let actual = eval_expression("toJSON(fromJSON('{\"b\":2,\"a\":1}'))", &Context::default())
+            .expect("toJSON should evaluate");
+        // Official writes Environment.NewLine: \r\n on Windows, \n elsewhere.
+        let expected = if cfg!(windows) {
+            "{\r\n  \"b\": 2,\r\n  \"a\": 1\r\n}"
+        } else {
+            "{\n  \"b\": 2,\n  \"a\": 1\n}"
+        };
+        assert_eq!(actual, Value::String(expected.to_string()));
+    }
+
+    #[test]
+    fn join_defaults_to_comma_separator() {
+        // Live-verified: official defaults the separator to ",".
+        let actual = eval_expression("join(fromJSON('[\"a\",\"b\"]'))", &Context::default())
+            .expect("join should evaluate");
+        assert_eq!(actual, Value::String("a,b".to_string()));
+    }
+
+    #[test]
+    fn join_ignores_non_primitive_separator() {
+        // Live-verified: official falls back to "," when separator is not primitive.
+        let actual = eval_expression(
+            "join(fromJSON('[\"a\",\"b\"]'), fromJSON('[\"x\"]'))",
+            &Context::default(),
+        )
+        .expect("join should evaluate");
+        assert_eq!(actual, Value::String("a,b".to_string()));
+    }
+
+    #[test]
+    fn join_object_returns_empty_string() {
+        // Live-verified: official returns "" for non-array, non-primitive input.
+        let actual = eval_expression("join(fromJSON('{\"a\":1}'))", &Context::default())
+            .expect("join should evaluate");
+        assert_eq!(actual, Value::String(String::new()));
+    }
+}
+
+#[test]
+fn bracket_expression_key_indexes_dynamically() {
+    // nushell ci.yml: ${{ env[matrix.target.options] }}
+    let mut context = Context::default();
+    context.insert("matrix", json!({"target": {"options": "--workspace"}}));
+    context.insert("env", json!({"--workspace": "--workspace", "other": "x"}));
+
+    assert_eq!(
+        eval_expression("${{ env[matrix.target.options] }}", &context).unwrap(),
+        Value::String("--workspace".to_owned())
+    );
+    // Missing key coalesces to null like other failed lookups.
+    assert_eq!(
+        eval_expression("${{ env[matrix.target.missing] }}", &context).unwrap(),
+        Value::Null
+    );
+    // Literal keys keep the historical Path shape and value.
+    assert_eq!(
+        eval_expression("${{ env['other'] }}", &context).unwrap(),
+        Value::String("x".to_owned())
+    );
+    assert_eq!(
+        eval_expression("${{ env[other] }}", &context).unwrap(),
+        Value::String("x".to_owned())
+    );
+    // Chained indexing past a dynamic key.
+    assert_eq!(
+        eval_expression("${{ matrix[matrix.target.options] }}", &context).unwrap(),
+        Value::Null
+    );
+}
+
+#[test]
+fn collect_context_properties_reports_literal_reads_only() {
+    let properties = collect_context_properties("${{ secrets.DEPLOY_KEY }}").unwrap();
+    assert_eq!(
+        properties.get("secrets"),
+        Some(&std::collections::BTreeSet::from(["DEPLOY_KEY".to_owned()]))
+    );
+
+    // A deeper read keeps its first property: the name is what gets stored.
+    let nested = collect_context_properties("${{ secrets.DEPLOY_KEY.public }}").unwrap();
+    assert_eq!(
+        nested.get("secrets"),
+        Some(&std::collections::BTreeSet::from(["DEPLOY_KEY".to_owned()]))
+    );
+
+    // Computed member access has no statically knowable property, and GitHub
+    // has no dynamic context access at all.
+    let computed = collect_context_properties("${{ fromJSON('{}').name }}").unwrap();
+    assert_eq!(computed.get("secrets"), None);
+
+    let indexed = collect_context_properties("${{ env[matrix.key] }}").unwrap();
+    assert_eq!(indexed.get("env"), None);
+}
+
+#[test]
+fn collect_context_properties_walks_functions_and_operators() {
+    let properties = collect_context_properties(
+        "${{ secrets.A == 'x' && format('{0}', secrets.B) || !secrets.C }}",
+    )
+    .unwrap();
+    assert_eq!(
+        properties.get("secrets"),
+        Some(&std::collections::BTreeSet::from([
+            "A".to_owned(),
+            "B".to_owned(),
+            "C".to_owned()
+        ]))
+    );
+    // Other contexts are reported under their own key, so a caller can ignore
+    // them.
+    let mixed = collect_context_properties("${{ vars.REGION }}").unwrap();
+    assert_eq!(
+        mixed.get("vars"),
+        Some(&std::collections::BTreeSet::from(["REGION".to_owned()]))
+    );
+}
+
+#[test]
+fn collect_secret_reads_reports_literal_names_without_dynamic() {
+    let reads = collect_secret_reads("${{ secrets.DEPLOY_KEY }}").unwrap();
+    assert_eq!(
+        reads.names,
+        std::collections::BTreeSet::from(["DEPLOY_KEY".to_owned()])
+    );
+    assert!(!reads.dynamic);
+
+    // Bracket form with a literal key is still a literal read.
+    let indexed = collect_secret_reads("${{ secrets['ALT_KEY'] }}").unwrap();
+    assert_eq!(
+        indexed.names,
+        std::collections::BTreeSet::from(["ALT_KEY".to_owned()])
+    );
+    assert!(!indexed.dynamic);
+
+    // Walks the same shapes the property collector does.
+    let mixed =
+        collect_secret_reads("${{ secrets.A == 'x' && format('{0}', secrets.B) || !secrets.C }}")
+            .unwrap();
+    assert_eq!(
+        mixed.names,
+        std::collections::BTreeSet::from(["A".to_owned(), "B".to_owned(), "C".to_owned()])
+    );
+    assert!(!mixed.dynamic);
+}
+
+#[test]
+fn collect_secret_reads_flags_unprovable_access_as_dynamic() {
+    // Dynamic index: the key is computed at run time.
+    let dynamic = collect_secret_reads("${{ secrets[matrix.pick] }}").unwrap();
+    assert!(dynamic.dynamic);
+    assert!(dynamic.names.is_empty());
+
+    // A bare secrets path hands the whole object to a function.
+    let bare = collect_secret_reads("${{ toJSON(secrets) }}").unwrap();
+    assert!(bare.dynamic);
+
+    // The `*` object filter reads every value.
+    let star = collect_secret_reads("${{ join(secrets.*) }}").unwrap();
+    assert!(star.dynamic);
+
+    // A dynamic index still reports names read elsewhere in the expression.
+    let both = collect_secret_reads("${{ secrets[matrix.pick] || secrets.FALLBACK }}").unwrap();
+    assert!(both.dynamic);
+    assert_eq!(
+        both.names,
+        std::collections::BTreeSet::from(["FALLBACK".to_owned()])
+    );
+}
+
+#[test]
+fn collect_secret_reads_ignores_non_secret_contexts() {
+    // `vars`, `env`, computed member access: none of it touches `secrets`.
+    for input in [
+        "${{ vars.REGION }}",
+        "${{ env[matrix.key] }}",
+        "${{ fromJSON('{\"a\":1}').a }}",
+    ] {
+        let reads = collect_secret_reads(input).unwrap();
+        assert!(reads.names.is_empty(), "{input}");
+        assert!(!reads.dynamic, "{input}");
+    }
+}

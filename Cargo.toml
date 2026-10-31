@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["vendor/preloop-gha-parser"]
+members = [
+    "vendor/preloop-gha-expressions",
+    "vendor/preloop-gha-lint",
+    "vendor/preloop-gha-parser",
+    "vendor/preloop-gha-sec",
+]
 
 [package]
 name = "loopt"
@@ -25,4 +30,6 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
+preloop-gha-lint = { path = "vendor/preloop-gha-lint" }
 preloop-gha-parser = { path = "vendor/preloop-gha-parser" }
+preloop-gha-sec = { path = "vendor/preloop-gha-sec" }
