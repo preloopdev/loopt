@@ -1146,6 +1146,18 @@ mod official_semantics {
         );
     }
 
+    /// A parenthesized value can be dereferenced; the fallback input pattern
+    /// `(inputs || github.event.inputs).x` is valid GitHub Actions.
+    #[test]
+    fn parenthesized_expression_supports_member_access() {
+        validate_expression("(inputs || github.event.inputs).x")
+            .expect("parenthesized member access parses");
+        validate_expression("(fromJSON('{\"a\":1}')).a")
+            .expect("parenthesized call result supports member access");
+        validate_expression("(inputs || github.event.inputs)['x']")
+            .expect("parenthesized expression supports index access");
+    }
+
     /// Deeply nested parens overflow the parser's stack instead of returning
     /// an error: 100k `(` from a 200 KB expression aborted the process before
     /// the depth guard existed. The guard must reject, not crash.

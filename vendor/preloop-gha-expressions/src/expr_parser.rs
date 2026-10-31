@@ -202,7 +202,9 @@ impl Parser {
                 self.advance();
                 let expr = self.parse_tracked_expr()?;
                 self.expect(Token::RParen)?;
-                Ok(expr)
+                // A parenthesized value can still be dereferenced:
+                // `(inputs || github.event.inputs).x`, `(fromJSON(s)).*`.
+                self.parse_member_suffix(expr)
             }
             Token::End => Err(ExpressionError::Eof),
             token => Err(ExpressionError::Unexpected(format!("{token:?}"))),
