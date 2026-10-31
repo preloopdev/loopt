@@ -15,6 +15,12 @@ Edit `.loopt/workflows/*`, not the generated YAML.
 ## Install
 
 ```sh
+cargo install loopt
+```
+
+Or from a checkout:
+
+```sh
 cargo install --path .
 ```
 
