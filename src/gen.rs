@@ -1,0 +1,345 @@
+//! `loopt gen`: run authoring source and write standard workflow YAML.
+//!
+//! Every source recorded in `.loopt/manifest.json`, plus any new source
+//! discovered under `.loopt/workflows`, runs by default. Each source's
+//! stdout becomes an ordered JSON workflow value; the shared authoring API
+//! (`WorkflowDocument`) folds that value into whatever YAML already exists
+//! at the destination, leaving unaffected syntax untouched, or creates the
+//! file from scratch when nothing exists yet. A workflow that is already
+//! semantically up to date is left byte-for-byte alone.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use anyhow::{bail, Context, Result};
+use preloop_gha_parser::WorkflowDocument;
+
+use crate::exec;
+use crate::languages::Language;
+use crate::manifest::{Manifest, ManifestEntry};
+use crate::paths;
+
+const SOURCE_DIR: &str = ".loopt/workflows";
+const WORKFLOWS_DIR: &str = ".github/workflows";
+
+pub struct GenOptions {
+    pub sources: Vec<PathBuf>,
+    pub force: bool,
+}
+
+struct Planned {
+    source: PathBuf,
+    output: PathBuf,
+    /// `None` means the destination is already semantically up to date and
+    /// must not be rewritten.
+    yaml: Option<String>,
+    /// Original destination contents observed during planning. Rechecked
+    /// immediately before any commit so a slow source cannot hide an edit.
+    original_yaml: Option<String>,
+    entry: ManifestEntry,
+}
+
+fn order_sensitive_eq(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    match (left, right) {
+        (serde_json::Value::Object(left), serde_json::Value::Object(right)) => {
+            left.len() == right.len()
+                && left.keys().eq(right.keys())
+                && left
+                    .keys()
+                    .all(|key| order_sensitive_eq(&left[key], &right[key]))
+        }
+        (serde_json::Value::Array(left), serde_json::Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| order_sensitive_eq(left, right))
+        }
+        (left, right) => left == right,
+    }
+}
+
+pub fn run(root: &Path, options: GenOptions) -> Result<()> {
+    let mut manifest = Manifest::load(root)?;
+    let sources = discover_sources(root, &manifest, &options.sources)?;
+    if sources.is_empty() {
+        bail!("no authoring source to generate (pass sources, or add files under {SOURCE_DIR})");
+    }
+
+    // Phase 1: run every source and build the whole write plan before
+    // touching disk, so a failure partway through never leaves some
+    // outputs written and others not.
+    let mut planned: Vec<Planned> = Vec::new();
+    let mut seen_outputs: BTreeSet<PathBuf> = BTreeSet::new();
+
+    for source in &sources {
+        let existing_entry = manifest.entry_for_source(source).cloned();
+
+        let language_id = existing_entry
+            .as_ref()
+            .map(|entry| entry.language.clone())
+            .or_else(|| Language::detect_entrypoint(source).map(|lang| lang.id().to_string()))
+            .with_context(|| {
+                format!(
+                    "{}: cannot determine a language for this source; `loopt import` it first, or add a manifest entry",
+                    source.display()
+                )
+            })?;
+
+        let plugin = existing_entry
+            .as_ref()
+            .and_then(|entry| entry.plugin.clone());
+        let value = match &plugin {
+            Some(plugin) => plugin
+                .synth(root, source)
+                .with_context(|| format!("{}: plugin synth failed", source.display()))?,
+            None => {
+                let language = Language::parse(&language_id).with_context(|| {
+                    format!("{}: unknown language {language_id:?}", source.display())
+                })?;
+                let command = language.command(source).with_context(|| {
+                    format!(
+                        "{}: cannot determine how to run this source",
+                        source.display()
+                    )
+                })?;
+                exec::run_source(&command, root)
+                    .with_context(|| format!("{}: generation failed", source.display()))?
+            }
+        };
+        if !value.is_object() {
+            bail!("{}: synthesized a non-object JSON value", source.display());
+        }
+
+        let output = match existing_entry.as_ref() {
+            Some(entry) => entry.output.clone(),
+            None => default_output(source)?,
+        };
+
+        paths::require_under(root, WORKFLOWS_DIR, &output)
+            .with_context(|| format!("{}: unsafe output path", output.display()))?;
+        paths::resolve_within(root, &output)
+            .with_context(|| format!("{}: unsafe output path", output.display()))?;
+        if manifest
+            .entries
+            .iter()
+            .any(|entry| entry.source != *source && entry.output == output)
+        {
+            bail!(
+                "{}: workflow output {} is already assigned to another manifest source",
+                source.display(),
+                output.display()
+            );
+        }
+        if !seen_outputs.insert(output.clone()) {
+            bail!(
+                "{}: duplicate workflow output {}",
+                source.display(),
+                output.display()
+            );
+        }
+
+        let on_disk = read_existing_yaml(root, &output)?;
+
+        // Refuse to clobber a YAML file edited outside Loopt: only
+        // overwrite files that either don't exist yet, or exactly match
+        // what Loopt last wrote (or accepted) there.
+        if let Some(on_disk) = &on_disk {
+            let matches_known = existing_entry
+                .as_ref()
+                .is_some_and(|entry| &entry.last_accepted_yaml == on_disk);
+            if !matches_known && !options.force {
+                bail!(
+                    "{}: was edited outside Loopt since the last `loopt gen`; pass --force to overwrite, or `loopt import` it to pick up the edits",
+                    output.display()
+                );
+            }
+        }
+
+        let (yaml, unchanged) = match &on_disk {
+            Some(existing_yaml) => {
+                let mut baseline = WorkflowDocument::parse(existing_yaml)
+                    .with_context(|| format!("{}: not valid workflow YAML", output.display()))?;
+                if order_sensitive_eq(baseline.value(), &value) {
+                    (existing_yaml.clone(), true)
+                } else {
+                    baseline.replace(value.clone()).with_context(|| {
+                        format!(
+                            "{}: cannot fold the generated workflow into the existing YAML",
+                            output.display()
+                        )
+                    })?;
+                    let yaml = baseline.to_yaml().with_context(|| {
+                        format!("{}: cannot render workflow YAML", output.display())
+                    })?;
+                    (yaml, false)
+                }
+            }
+            None => {
+                let document = WorkflowDocument::from_value(value.clone()).with_context(|| {
+                    format!(
+                        "{}: generated workflow is not representable",
+                        output.display()
+                    )
+                })?;
+                let yaml = document.to_yaml().with_context(|| {
+                    format!("{}: cannot render workflow YAML", output.display())
+                })?;
+                (yaml, false)
+            }
+        };
+
+        let entry = ManifestEntry {
+            language: language_id,
+            source: source.clone(),
+            output: output.clone(),
+            last_accepted_yaml: yaml.clone(),
+            source_fingerprint: existing_entry
+                .as_ref()
+                .map(|entry| entry.source_fingerprint.clone())
+                .unwrap_or_default(),
+            plugin,
+        };
+
+        planned.push(Planned {
+            source: source.clone(),
+            output,
+            yaml: if unchanged { None } else { Some(yaml) },
+            original_yaml: on_disk,
+            entry,
+        });
+    }
+
+    // Recheck every destination before the first write. This closes the
+    // planning-to-commit window for ordinary edits (an OS-level race remains
+    // possible between this check and the individual atomic rename).
+    if !options.force {
+        for item in &planned {
+            let current = read_existing_yaml(root, &item.output)?;
+            if current != item.original_yaml {
+                bail!(
+                    "{}: changed on disk while generation was in progress; refusing to overwrite",
+                    item.output.display()
+                );
+            }
+        }
+    }
+
+    // Phase 2: commit.
+    for item in &planned {
+        if let Some(yaml) = &item.yaml {
+            paths::write_atomic(root, &item.output, yaml.as_bytes())
+                .with_context(|| format!("write {}", item.output.display()))?;
+        }
+        manifest.upsert(item.entry.clone());
+    }
+    manifest.save(root)?;
+
+    for item in &planned {
+        if item.yaml.is_some() {
+            println!(
+                "wrote {} <- {}",
+                item.output.display(),
+                item.source.display()
+            );
+        } else {
+            println!(
+                "unchanged {} <- {}",
+                item.output.display(),
+                item.source.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `.github/workflows/<stem>.yml` for a source with no manifest entry yet,
+/// i.e. authoring from scratch. Rust's stem is its project directory name;
+/// every other language's stem is its entrypoint's file stem.
+fn default_output(source: &Path) -> Result<PathBuf> {
+    let stem = if source.file_name().and_then(|n| n.to_str()) == Some("main.rs") {
+        source.parent().and_then(|dir| dir.file_name())
+    } else {
+        source.file_stem()
+    }
+    .with_context(|| format!("{}: cannot derive a workflow stem", source.display()))?;
+    Ok(PathBuf::from(WORKFLOWS_DIR)
+        .join(stem)
+        .with_extension("yml"))
+}
+
+fn read_existing_yaml(root: &Path, output: &Path) -> Result<Option<String>> {
+    let dest = root.join(output);
+    if dest.exists() && !dest.is_file() {
+        bail!(
+            "{}: workflow destination exists but is not a regular file",
+            output.display()
+        );
+    }
+    if !dest.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(
+        std::fs::read_to_string(&dest).with_context(|| format!("read {}", dest.display()))?,
+    ))
+}
+
+fn discover_sources(
+    root: &Path,
+    manifest: &Manifest,
+    explicit: &[PathBuf],
+) -> Result<Vec<PathBuf>> {
+    if !explicit.is_empty() {
+        let mut sources = Vec::new();
+        for path in explicit {
+            let relative = paths::relativize(root, path)?;
+            paths::resolve_within(root, &relative)
+                .with_context(|| format!("{}: unsafe path", relative.display()))?;
+            if !root.join(&relative).exists() {
+                bail!("{}: no such source", relative.display());
+            }
+            sources.push(relative);
+        }
+        sources.sort();
+        sources.dedup();
+        return Ok(sources);
+    }
+
+    let mut sources: BTreeSet<PathBuf> = manifest
+        .entries
+        .iter()
+        .map(|entry| entry.source.clone())
+        .collect();
+    let dir = root.join(SOURCE_DIR);
+    if dir.is_dir() {
+        for path in walk_files(&dir)? {
+            let relative = path
+                .strip_prefix(root)
+                .expect("walked path is under root")
+                .to_path_buf();
+            if Language::detect_entrypoint(&relative).is_some() {
+                sources.insert(relative);
+            }
+        }
+    }
+    Ok(sources.into_iter().collect())
+}
+
+fn walk_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for entry in
+            std::fs::read_dir(&current).with_context(|| format!("read {}", current.display()))?
+        {
+            let entry = entry.with_context(|| format!("read {}", current.display()))?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                stack.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    Ok(files)
+}

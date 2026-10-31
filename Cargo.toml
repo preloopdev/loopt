@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["vendor/preloop-gha-parser"]
+
+[package]
+name = "loopt"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Author GitHub Actions workflows in TypeScript, Python, Go, or Rust, and generate standard workflow YAML from them."
+readme = "README.md"
+publish = false
+
+[lib]
+name = "loopt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "loopt"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+preloop-gha-parser = { path = "vendor/preloop-gha-parser" }
