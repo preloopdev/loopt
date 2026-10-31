@@ -5,6 +5,7 @@ const workflow = {
   on: {
     push: { branches: ["main"] },
     pull_request: {},
+    workflow_dispatch: {},
   },
   permissions: { contents: "read" },
   concurrency: {
