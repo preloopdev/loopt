@@ -13,6 +13,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Author GitHub Actions workflows in TypeScript, Python, Go, or Rust, and generate standard workflow YAML from them."
+repository = "https://github.com/preloopdev/loopt"
 readme = "README.md"
 publish = false
 
