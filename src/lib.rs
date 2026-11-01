@@ -30,3 +30,5 @@ pub mod manifest;
 pub mod paths;
 /// The `loopt plugin <language>` process protocol.
 pub mod plugin;
+/// `shellcheck` integration for workflow `run:` scripts.
+pub mod shellcheck;

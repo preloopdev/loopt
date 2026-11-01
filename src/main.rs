@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use loopt::plugin::PluginSpec;
+use loopt::shellcheck::{ShellcheckMode, ShellcheckOptions};
 use loopt::{gen, import, init, lint, plugin};
 use preloop_gha_sec::Persona;
 
@@ -100,6 +101,12 @@ enum Command {
         /// JSON inventory of runner labels and secret names (never values).
         #[arg(long)]
         context: Option<PathBuf>,
+        /// shellcheck integration for `run:` scripts: auto, on, off.
+        #[arg(long, default_value = "auto")]
+        shellcheck: String,
+        /// Path to the shellcheck executable (default: `shellcheck` on `PATH`).
+        #[arg(long)]
+        shellcheck_path: Option<String>,
     },
     /// Advanced: serve one describe/emit/synth request for a built-in
     /// language over stdin/stdout, then exit. This is the reference a
@@ -177,9 +184,12 @@ fn main() -> Result<()> {
             json,
             persona,
             context,
+            shellcheck,
+            shellcheck_path,
         } => {
             let root = resolve_root(cli.root)?;
             let persona = parse_persona(&persona)?;
+            let shellcheck = ShellcheckMode::parse(&shellcheck)?;
             lint::run(
                 &root,
                 lint::LintOptions {
@@ -187,6 +197,10 @@ fn main() -> Result<()> {
                     json,
                     persona,
                     context,
+                    shellcheck: ShellcheckOptions {
+                        mode: shellcheck,
+                        path: shellcheck_path,
+                    },
                 },
             )
         }

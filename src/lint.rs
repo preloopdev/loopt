@@ -1,9 +1,10 @@
 //! `loopt lint`: native correctness and security review of workflow YAML.
 //!
 //! The checks come from the shared MIT `preloop-gha-lint` and
-//! `preloop-gha-sec` crates. Nothing is downloaded or executed; repository
-//! evidence that would need a network call is reported as unavailable rather
-//! than treated as safe.
+//! `preloop-gha-sec` crates, plus an optional external `shellcheck` process
+//! for `run:` scripts. Nothing is downloaded; repository evidence that would
+//! need a network call is reported as unavailable rather than treated as
+//! safe.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ use serde::Serialize;
 
 use crate::manifest::Manifest;
 use crate::paths;
+use crate::shellcheck::{self, ShellcheckOptions};
 
 const WORKFLOWS_DIR: &str = ".github/workflows";
 
@@ -24,6 +26,7 @@ pub struct LintOptions {
     pub json: bool,
     pub persona: Persona,
     pub context: Option<PathBuf>,
+    pub shellcheck: ShellcheckOptions,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,7 +42,7 @@ pub fn run(root: &Path, options: LintOptions) -> Result<()> {
         bail!("no workflow YAML to lint (pass paths, or generate workflows first)");
     }
     let context = load_context(root, options.context.as_deref())?;
-    let reports = check_paths(root, &paths, options.persona, &context)?;
+    let reports = check_paths(root, &paths, options.persona, &context, &options.shellcheck)?;
 
     if options.json {
         println!("{}", serde_json::to_string_pretty(&reports)?);
@@ -58,13 +61,15 @@ pub fn run(root: &Path, options: LintOptions) -> Result<()> {
     Ok(())
 }
 
-/// Run the shared checks over `paths` (project-relative or absolute under
-/// `root`) without printing or exiting. Used by `loopt gen` after writing.
+/// Run the shared checks and shellcheck over `paths` (project-relative or
+/// absolute under `root`) without printing or exiting. Used by `loopt gen`
+/// after writing.
 pub fn check_paths(
     root: &Path,
     paths: &[PathBuf],
     persona: Persona,
     context: &LintContext,
+    shellcheck_options: &ShellcheckOptions,
 ) -> Result<Vec<FileFindings>> {
     let mut reports = Vec::with_capacity(paths.len());
     for path in paths {
@@ -83,6 +88,7 @@ pub fn check_paths(
             },
         );
         findings.extend(security.findings);
+        findings.extend(shellcheck::check(&document, shellcheck_options)?);
         findings.sort_by(|left, right| {
             (&left.path, &left.rule_id, &left.source, &left.message).cmp(&(
                 &right.path,

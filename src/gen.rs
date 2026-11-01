@@ -23,6 +23,7 @@ use crate::exec;
 use crate::languages::Language;
 use crate::manifest::{Manifest, ManifestEntry};
 use crate::paths;
+use crate::shellcheck::ShellcheckOptions;
 
 const SOURCE_DIR: &str = ".loopt/workflows";
 const WORKFLOWS_DIR: &str = ".github/workflows";
@@ -376,6 +377,7 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
             &outputs,
             preloop_gha_sec::Persona::Regular,
             &preloop_gha_lint::LintContext::default(),
+            &ShellcheckOptions::default(),
         ) {
             Ok(reports) => crate::lint::print_human(&reports),
             Err(error) => eprintln!("lint review skipped: {error}"),
