@@ -9,12 +9,17 @@ use anyhow::{bail, Context, Result};
 use preloop_gha_authoring::WorkflowDocument;
 
 use crate::languages::{GeneratedSource, Language};
-use crate::manifest::{self, Manifest, ManifestEntry};
+use crate::manifest::{self, DocumentKind, Manifest, ManifestEntry};
 use crate::paths;
 use crate::plugin::PluginSpec;
 
 const WORKFLOWS_DIR: &str = ".github/workflows";
 const SOURCE_DIR: &str = ".loopt/workflows";
+
+struct YamlInput {
+    path: PathBuf,
+    document_kind: DocumentKind,
+}
 
 pub struct ImportOptions {
     pub paths: Vec<PathBuf>,
@@ -32,9 +37,11 @@ struct Planned {
 }
 
 pub fn run(root: &Path, options: ImportOptions) -> Result<()> {
-    let yaml_paths = discover_yaml_inputs(root, &options.paths)?;
-    if yaml_paths.is_empty() {
-        bail!("no workflow YAML to import (pass paths, or add files under {WORKFLOWS_DIR})");
+    let yaml_inputs = discover_yaml_inputs(root, &options.paths)?;
+    if yaml_inputs.is_empty() {
+        bail!(
+            "no workflow or action YAML to import (pass paths, or add files under {WORKFLOWS_DIR})"
+        );
     }
 
     let (language, plugin) = resolve_language(root, &options)?;
@@ -46,13 +53,14 @@ pub fn run(root: &Path, options: ImportOptions) -> Result<()> {
     let mut planned: Vec<Planned> = Vec::new();
     let mut seen_destinations: BTreeSet<PathBuf> = BTreeSet::new();
 
-    for yaml_path in &yaml_paths {
+    for input in &yaml_inputs {
+        let yaml_path = &input.path;
         let yaml_text = std::fs::read_to_string(root.join(yaml_path))
             .with_context(|| format!("read {}", yaml_path.display()))?;
         let document = WorkflowDocument::parse(&yaml_text)
-            .with_context(|| format!("{}: not valid workflow YAML", yaml_path.display()))?;
+            .with_context(|| format!("{}: not valid workflow/action YAML", yaml_path.display()))?;
 
-        let stem = paths::stem_for(yaml_path)?;
+        let stem = paths::source_stem_for(yaml_path, input.document_kind == DocumentKind::Action)?;
         let stem_path = PathBuf::from(SOURCE_DIR).join(&stem);
 
         let generated = match &plugin {
@@ -107,7 +115,7 @@ pub fn run(root: &Path, options: ImportOptions) -> Result<()> {
             .any(|entry| entry.source == generated.entrypoint && entry.output != *yaml_path)
         {
             bail!(
-                "{}: generated entrypoint {} is already assigned to another workflow",
+                "{}: generated entrypoint {} is already assigned to another document",
                 yaml_path.display(),
                 generated.entrypoint.display()
             );
@@ -118,7 +126,7 @@ pub fn run(root: &Path, options: ImportOptions) -> Result<()> {
             .any(|entry| entry.output == *yaml_path && entry.source != generated.entrypoint)
         {
             bail!(
-                "{}: workflow is already assigned to another manifest source",
+                "{}: document is already assigned to another manifest source",
                 yaml_path.display()
             );
         }
@@ -152,6 +160,7 @@ pub fn run(root: &Path, options: ImportOptions) -> Result<()> {
             language: options.language.clone(),
             source: generated.entrypoint.clone(),
             output: yaml_path.clone(),
+            document_kind: input.document_kind,
             last_accepted_yaml: yaml_text,
             source_fingerprint: fingerprint,
             plugin: plugin.clone(),
@@ -267,7 +276,7 @@ fn read_fingerprint(root: &Path, generated: &GeneratedSource) -> Result<Option<S
     ))))
 }
 
-fn discover_yaml_inputs(root: &Path, explicit: &[PathBuf]) -> Result<Vec<PathBuf>> {
+fn discover_yaml_inputs(root: &Path, explicit: &[PathBuf]) -> Result<Vec<YamlInput>> {
     if !explicit.is_empty() {
         let mut found = Vec::new();
         for path in explicit {
@@ -277,10 +286,22 @@ fn discover_yaml_inputs(root: &Path, explicit: &[PathBuf]) -> Result<Vec<PathBuf
             if !root.join(&relative).is_file() {
                 bail!("{}: no such file", relative.display());
             }
-            found.push(relative);
+            // Files inside `.github/workflows/` are workflows even when they
+            // happen to be named action.yml; GitHub applies the same rule.
+            let document_kind = if relative.starts_with(WORKFLOWS_DIR) {
+                DocumentKind::Workflow
+            } else if paths::is_action_path(&relative) {
+                DocumentKind::Action
+            } else {
+                DocumentKind::Workflow
+            };
+            found.push(YamlInput {
+                path: relative,
+                document_kind,
+            });
         }
-        found.sort();
-        found.dedup();
+        found.sort_by(|left, right| left.path.cmp(&right.path));
+        found.dedup_by(|left, right| left.path == right.path);
         return Ok(found);
     }
 
@@ -297,10 +318,13 @@ fn discover_yaml_inputs(root: &Path, explicit: &[PathBuf]) -> Result<Vec<PathBuf
                 path.extension().and_then(|ext| ext.to_str()),
                 Some("yml") | Some("yaml")
             ) {
-                found.push(PathBuf::from(WORKFLOWS_DIR).join(entry.file_name()));
+                found.push(YamlInput {
+                    path: PathBuf::from(WORKFLOWS_DIR).join(entry.file_name()),
+                    document_kind: DocumentKind::Workflow,
+                });
             }
         }
     }
-    found.sort();
+    found.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(found)
 }

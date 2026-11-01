@@ -10,6 +10,8 @@
 //! This crate is split into a library (this file) and a thin `src/main.rs`
 //! binary so the pieces below are independently testable from `tests/`.
 
+/// GitHub Actions metadata, pins and generated bindings.
+pub mod actions;
 /// Executes a generated or hand-authored source and parses its single JSON
 /// workflow value from stdout.
 pub mod exec;
@@ -30,5 +32,7 @@ pub mod manifest;
 pub mod paths;
 /// The `loopt plugin <language>` process protocol.
 pub mod plugin;
+/// Names-only secret inventory synchronization.
+pub mod secrets;
 /// `shellcheck` integration for workflow `run:` scripts.
 pub mod shellcheck;

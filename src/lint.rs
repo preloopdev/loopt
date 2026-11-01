@@ -139,8 +139,11 @@ pub fn print_human(reports: &[FileFindings]) {
 }
 
 fn load_context(root: &Path, path: Option<&Path>) -> Result<LintContext> {
-    let Some(path) = path else {
-        return Ok(LintContext::default());
+    let default_path = Path::new(".loopt/secrets.json");
+    let path = match path {
+        Some(path) => path,
+        None if root.join(default_path).is_file() => default_path,
+        None => return Ok(LintContext::default()),
     };
     let path = paths::resolve_within(root, &paths::relativize(root, path)?)
         .with_context(|| format!("resolve lint context {}", path.display()))?;

@@ -90,6 +90,25 @@ overwrite a workflow edited outside Loopt unless you pass `--force`.
 You can also write source from scratch under `.loopt/workflows/`; `loopt gen`
 discovers it and writes the matching workflow.
 
+`loopt import` also converts composite actions. Any file named `action.yml`
+or `action.yaml` outside `.github/workflows/` is imported as action metadata
+(source under `.loopt/workflows/actions/…`); `loopt gen` writes it back
+byte-for-byte until you edit the source. A file named `action.yml` *inside*
+`.github/workflows/` stays a workflow, matching GitHub's own rule.
+
+In TypeScript, tagged `run` templates keep untrusted values out of shell
+source by moving each interpolation into a step environment variable and
+referencing it with a quoted `"${__LOOPT_RUN_N}"`:
+
+```ts
+run`echo "PR title: ${github.event.pullRequest.title}"`
+```
+
+Strings, numbers, booleans and expressions are accepted; ambiguous quoting,
+command substitution and unsupported shells are rejected up front.
+`run.unsafe` interpolates source directly when you really mean it.
+
+
 ### Keep YAML and source in sync
 
 Generated YAML is output, not a second source of truth. `loopt gen --check`
@@ -105,6 +124,49 @@ you choose a direction: `loopt gen --force` regenerates the YAML from source
 and discards the hand edit, while `loopt import` turns the edited YAML back
 into source (it refuses to overwrite source you changed unless you pass
 `--force`).
+
+
+## Action bindings
+
+Typed bindings turn any GitHub Action into a commit-pinned import with
+declared inputs and outputs:
+
+```sh
+loopt actions add actions/checkout@v6
+```
+
+This resolves the ref to a commit SHA through `gh api`, reads the action's
+`action.yml`, and writes `.loopt/actions/checkout.ts` plus an entry in
+`.loopt/actions.lock`. The generated module imports `@loopt/sdk` (override
+for local checkouts with `--sdk-import`); pinned inputs get typed names and
+declared outputs become `StepRef` outputs, so `checkout(...).outputs.headSha`
+type-checks.
+
+```sh
+loopt actions list [--json]
+loopt actions update actions/checkout@main     # re-resolve and re-pin
+loopt actions update checkout --output new-out # patch metadata (also --input-type, --patch[-file])
+loopt actions verify                           # offline: lock + generated files intact
+loopt actions remove checkout
+```
+
+`update` and `remove` refuse to touch a generated file that was edited
+outside Loopt unless `--force` is passed.
+
+## Secrets
+
+```sh
+loopt secrets sync --repo owner/repo --environment prod
+```
+
+Writes **names only** — never values — to `.loopt/secrets.json` (a
+`--context`-compatible lint inventory) and `.loopt/secrets.ts` (typed
+`secrets` accessors for the SDK, `--sdk-import` to override). Repository and
+organization-visible names merge into `available_secrets`; `--environment`
+scopes the per-environment inventory while `known_environments` records
+every environment GitHub returned. Nothing is written unless every API call
+succeeds. `loopt lint` loads `.loopt/secrets.json` automatically, so missing
+secrets become lint findings instead of surprises at runtime.
 
 ## Add a language
 
@@ -221,6 +283,9 @@ Runs native correctness and security checks on generated workflows. Warnings
 exit 0; errors exit 1. Use `--json` for machine output, `--persona pedantic`
 for stricter policy checks, and `--context inventory.json` to supply known
 runner labels and secret names (never values).
+
+`.loopt/secrets.json` (from `loopt secrets sync`) is loaded automatically as
+the default context; `--context` overrides it.
 
 `loopt gen` runs the same review automatically; pass `--no-lint` to skip it.
 

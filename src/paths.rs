@@ -97,6 +97,83 @@ pub fn require_under(root: &Path, prefix: &str, path: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// Return whether `path` names GitHub's conventional action metadata file.
+///
+/// Action metadata is identified by its filename, not by a fixed parent
+/// directory: repository-local actions may live at the repository root,
+/// under `.github/actions/<name>`, or another in-repository directory.
+pub fn is_action_path(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("action.yml") | Some("action.yaml")
+    )
+}
+
+/// Require an action output to use an action metadata filename.
+pub fn require_action_path(path: &Path) -> Result<()> {
+    if !is_action_path(path) {
+        bail!(
+            "{}: action output must be named action.yml or action.yaml",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Derive the relative source stem for an imported document.
+///
+/// Workflows retain the historical `<filename stem>` layout. Actions are
+/// rooted under `actions/` and include their parent path so a root
+/// `action.yml`, a workflow called `action.yml`, and actions with the same
+/// basename can all be imported without one source overwriting another.
+pub fn source_stem_for(path: &Path, action: bool) -> Result<PathBuf> {
+    let stem = stem_for(path)?;
+    if !action {
+        return Ok(PathBuf::from(stem));
+    }
+
+    let mut source = PathBuf::from("actions");
+    let mut parent_components = Vec::new();
+    if let Some(parent) = path.parent() {
+        for component in parent.components() {
+            match component {
+                Component::Normal(name) => parent_components.push(name.to_owned()),
+                Component::CurDir => {}
+                other => bail!(
+                    "{}: unsafe action parent component {other:?}",
+                    path.display()
+                ),
+            }
+        }
+    }
+
+    // Keep the conventional `.github/actions/<name>/action.*` layout short,
+    // while retaining every component for other valid in-repository action
+    // paths. A root action gets its own namespace as well.
+    if parent_components.starts_with(&[
+        std::ffi::OsString::from(".github"),
+        std::ffi::OsString::from("actions"),
+    ]) {
+        parent_components.drain(..2);
+    }
+    if parent_components.is_empty() {
+        source.push("root");
+    } else {
+        for component in parent_components {
+            source.push(component);
+        }
+    }
+
+    // `action.yml` and `action.yaml` may legally coexist on disk while
+    // referring to different manifest outputs; keep their source paths
+    // distinct rather than silently sharing one generated file.
+    let source_name = match path.extension().and_then(|extension| extension.to_str()) {
+        Some("yaml") => format!("{stem}-yaml"),
+        _ => stem,
+    };
+    source.push(source_name);
+    Ok(source)
+}
 
 /// Derive a safe single-component workflow stem from a YAML file's name
 /// (its filename minus extension), rejecting anything that could act as a

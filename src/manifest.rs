@@ -14,6 +14,19 @@ use crate::plugin::PluginSpec;
 pub const MANIFEST_VERSION: u32 = 1;
 pub const MANIFEST_PATH: &str = ".loopt/manifest.json";
 
+/// The kind of GitHub Actions document represented by a manifest entry.
+///
+/// Entries written by older v1 manifests have no kind field and deserialize
+/// as workflows, preserving the original behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum DocumentKind {
+    #[default]
+    Workflow,
+    Action,
+}
+
 /// One tracked source/output pair.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestEntry {
@@ -21,8 +34,14 @@ pub struct ManifestEntry {
     pub language: String,
     /// Project-relative path to the authoring source entrypoint.
     pub source: PathBuf,
-    /// Project-relative path to the generated workflow YAML.
+    /// Project-relative path to the generated workflow or action YAML.
     pub output: PathBuf,
+    /// Whether `output` is a workflow document or an action metadata document.
+    ///
+    /// `#[serde(default)]` is important here: manifests created before action
+    /// support are still v1 manifests and every omitted kind is a workflow.
+    #[serde(default, alias = "kind")]
+    pub document_kind: DocumentKind,
     /// The exact YAML text Loopt last wrote (or accepted as already
     /// matching) at `output`. Lets `gen` detect edits made outside Loopt
     /// before it would overwrite the file, and skip a no-op rewrite.

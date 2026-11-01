@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 
 use loopt::plugin::PluginSpec;
 use loopt::shellcheck::{ShellcheckMode, ShellcheckOptions};
-use loopt::{gen, import, init, lint, plugin};
+use loopt::{actions, gen, import, init, lint, plugin, secrets};
 use preloop_gha_sec::Persona;
 
 #[derive(Parser)]
@@ -28,6 +28,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Manage pinned action bindings: add, update, list, remove or verify.
+    Actions {
+        /// Subcommand and its options.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Synchronize names-only secret inventory from GitHub.
+    Secrets {
+        /// Subcommand and its options.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Start a new project: write a starter workflow as source, then generate it.
     ///
     /// Picks a starter from the project files it finds (package.json,
@@ -121,6 +133,8 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Actions { args } => actions::run(&resolve_root(cli.root)?, &args),
+        Command::Secrets { args } => secrets::run(&resolve_root(cli.root)?, &args),
         Command::Plugin { language } => {
             let root = resolve_root(cli.root)?;
             plugin::serve_builtin_once(&language, &root)
