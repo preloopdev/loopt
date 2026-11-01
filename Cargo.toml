@@ -5,6 +5,7 @@ members = [
     "vendor/preloop-gha-lint",
     "vendor/preloop-gha-authoring",
     "vendor/preloop-gha-sec",
+    "crates/preloop-gha-schema",
 ]
 
 [package]
