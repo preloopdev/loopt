@@ -1,0 +1,13 @@
+[package]
+name = "loopt-sdkgen"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "TypeScript SDK generator for loopt's GitHub Actions workflow and action schemas"
+repository = "https://github.com/preloopdev/loopt"
+publish = false
+
+[dependencies]
+anyhow = "1"
+preloop-gha-schema = { path = "../preloop-gha-schema" }
+serde_json = { version = "1", features = ["preserve_order"] }

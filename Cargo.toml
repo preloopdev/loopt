@@ -6,6 +6,7 @@ members = [
     "vendor/preloop-gha-authoring",
     "vendor/preloop-gha-sec",
     "crates/preloop-gha-schema",
+    "crates/loopt-sdkgen",
 ]
 
 [package]
