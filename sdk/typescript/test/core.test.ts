@@ -209,15 +209,28 @@ test("wait, cancel, parallel, and waitAll lower to their schema shapes", () => {
   );
 });
 
-test("wait and cancel reject targets without an explicit step id", () => {
+test("wait and cancel targets receive automatic step ids", () => {
   const orphanWait = run("orphan");
-  throwsCode("missing-step-id", () =>
+  assert.equal(
     stepsJson([orphanWait, wait(orphanWait)]),
+    '{"on":"push","jobs":{"build":{"runs-on":"ubuntu-latest","steps":[{"id":"step_1","run":"orphan"},{"wait":"step_1"}]}}}',
   );
 
   const orphanCancel = run("orphan");
-  throwsCode("missing-step-id", () =>
+  assert.equal(
     stepsJson([orphanCancel, cancel(orphanCancel)]),
+    '{"on":"push","jobs":{"build":{"runs-on":"ubuntu-latest","steps":[{"id":"step_1","run":"orphan"},{"cancel":"step_1"}]}}}',
+  );
+
+  const explicit = run("one", { id: "first", background: true });
+  assert.equal(
+    stepsJson([explicit, wait(explicit)]),
+    '{"on":"push","jobs":{"build":{"runs-on":"ubuntu-latest","steps":[{"id":"first","run":"one","background":true},{"wait":"first"}]}}}',
+  );
+
+  assert.equal(
+    stepsJson([run("one", { id: "one", background: true }), wait("one")]),
+    '{"on":"push","jobs":{"build":{"runs-on":"ubuntu-latest","steps":[{"id":"one","run":"one","background":true},{"wait":"one"}]}}}',
   );
 });
 
@@ -630,6 +643,5 @@ test("the public entry point exports the core constructors and passes", () => {
   assert.equal(typeof StepRef, "function");
   assert.equal(typeof assemble, "function");
   assert.ok(Array.isArray(PASSES));
-  assert.equal(PASSES.length, 4);
   assert.ok(PASSES.every((pass) => typeof pass === "function"));
 });

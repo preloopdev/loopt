@@ -1,4 +1,8 @@
-import type { JobFactory, WorkflowJob } from "../generated/workflow.ts";
+import type {
+  JobFactory,
+  JobOutputs,
+  WorkflowJob,
+} from "../generated/workflow.ts";
 import { LooptError } from "../kit/index.ts";
 import type { DocValue } from "../kit/index.ts";
 import { JobRef } from "./job_ref.ts";
@@ -41,9 +45,15 @@ function definitionRecord(def: object): { [key: string]: unknown } {
  * Nothing beyond the argument shape is validated here; the definition is
  * checked against the workflow schema when the surrounding workflow produces
  * its document.
+ *
+ * @typeParam O - Names of the outputs the job declares, enabling typed
+ * references through {@link JobRef.outputs}. A definition without `outputs`
+ * yields `JobRef<never>`.
  */
-export function job(def: JobDef): JobRef {
-  return new JobRef("job", definitionRecord(def));
+export function job<const O extends string = never>(
+  def: JobDef & { outputs?: { [K in O]: JobOutputs[string] } },
+): JobRef<O> {
+  return new JobRef<O>("job", definitionRecord(def));
 }
 
 /**
@@ -54,7 +64,7 @@ export function job(def: JobDef): JobRef {
  *
  * @throws {LooptError} `"duplicate-key"` when `def` also carries `uses`.
  */
-export function callWorkflow(uses: string, def?: CallDef): JobRef {
+export function callWorkflow(uses: string, def?: CallDef): JobRef<string> {
   const lowered: { [key: string]: unknown } = { uses };
   if (def !== undefined) {
     for (const [key, value] of Object.entries(def)) {

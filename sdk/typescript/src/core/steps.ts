@@ -2,8 +2,13 @@ import { LooptError, obj } from "../kit/index.ts";
 import type { DocValue, Expr } from "../kit/index.ts";
 import { StepRef } from "./step_ref.ts";
 
-/** Options shared by the run, uses, and wait-all step helpers. */
-export interface StepOpts {
+/**
+ * Options shared by the run, uses, and wait-all step helpers.
+ *
+ * @typeParam O - Names of the outputs the step declares, enabling typed
+ * references through {@link StepRef.outputs}.
+ */
+export interface StepOpts<O extends string = string> {
   /** Step name displayed by GitHub. */
   name?: string | Expr;
   /** Step id, used by `wait`, `cancel`, and step outputs. */
@@ -18,12 +23,17 @@ export interface StepOpts {
   continueOnError?: boolean | Expr;
   /** Whether the step runs in the background. */
   background?: boolean;
+  /**
+   * Names of the outputs the step writes. The names are recorded on the
+   * reference for typed output access and are never emitted as a step key.
+   */
+  outputs?: readonly O[];
   /** Extra keys appended after the canonical keys, without schema processing. */
   extra?: Record<string, DocValue>;
 }
 
 /** Options accepted by {@link run}, adding the shell and working directory. */
-export interface RunStepOpts extends StepOpts {
+export interface RunStepOpts<O extends string = string> extends StepOpts<O> {
   /** Shell used to run the command. */
   shell?: string;
   /** Directory the command runs in. */
@@ -34,12 +44,16 @@ export interface RunStepOpts extends StepOpts {
 export type WaitAllOpts = Pick<StepOpts, "name" | "id" | "continueOnError">;
 
 /** Builds a step reference from canonical, ordered entries. */
-function stepRef(kind: StepRef["kind"], entries: Array<[string, unknown]>): StepRef {
+function stepRef<O extends string>(
+  kind: StepRef["kind"],
+  entries: Array<[string, unknown]>,
+  declared?: readonly O[],
+): StepRef<O> {
   const def: { [key: string]: unknown } = {};
   for (const [key, value] of entries) {
     def[key] = value;
   }
-  return new StepRef(kind, def);
+  return new StepRef<O>(kind, def, declared);
 }
 
 /** Copies a user-supplied record into a document value, preserving key order. */
@@ -71,7 +85,10 @@ function pushDefined(
  * `workingDirectory`, `continueOnError`, `timeoutMinutes`, `background`,
  * `extra`.
  */
-export function run(command: string, opts?: RunStepOpts): StepRef {
+export function run<const O extends string = never>(
+  command: string,
+  opts?: RunStepOpts<O>,
+): StepRef<O> {
   const entries: Array<[string, unknown]> = [];
   if (opts !== undefined) {
     pushDefined(entries, "name", opts.name);
@@ -90,7 +107,7 @@ export function run(command: string, opts?: RunStepOpts): StepRef {
     pushDefined(entries, "background", opts.background);
     pushDefined(entries, "extra", opts.extra);
   }
-  return stepRef("run", entries);
+  return stepRef("run", entries, opts?.outputs ?? []);
 }
 
 /**
@@ -100,11 +117,11 @@ export function run(command: string, opts?: RunStepOpts): StepRef {
  * `continueOnError`, `timeoutMinutes`, `background`, `extra`; `with` is
  * omitted when `inputs` is absent or empty.
  */
-export function uses(
+export function uses<const O extends string = string>(
   action: string,
   inputs?: Record<string, string | number | boolean | Expr>,
-  opts?: StepOpts,
-): StepRef {
+  opts?: StepOpts<O>,
+): StepRef<O> {
   const entries: Array<[string, unknown]> = [];
   if (opts !== undefined) {
     pushDefined(entries, "name", opts.name);
@@ -124,16 +141,16 @@ export function uses(
     pushDefined(entries, "background", opts.background);
     pushDefined(entries, "extra", opts.extra);
   }
-  return stepRef("uses", entries);
+  return stepRef("uses", entries, opts?.outputs);
 }
 
 /** Builds a step that runs a Docker image as an action (`docker://<image>`). */
-export function docker(
+export function docker<const O extends string = string>(
   image: string,
   inputs?: Record<string, string | number | boolean | Expr>,
-  opts?: StepOpts,
-): StepRef {
-  return uses("docker://" + image, inputs, opts);
+  opts?: StepOpts<O>,
+): StepRef<O> {
+  return uses<O>("docker://" + image, inputs, opts);
 }
 
 /**
@@ -142,11 +159,11 @@ export function docker(
  * @throws {LooptError} `"invalid-local-path"` when `path` does not start with
  * `"./"`.
  */
-export function local(
+export function local<const O extends string = string>(
   path: string,
   inputs?: Record<string, string | number | boolean | Expr>,
-  opts?: StepOpts,
-): StepRef {
+  opts?: StepOpts<O>,
+): StepRef<O> {
   if (!path.startsWith("./")) {
     throw new LooptError(
       "invalid-local-path",
@@ -154,7 +171,7 @@ export function local(
         JSON.stringify(path),
     );
   }
-  return uses(path, inputs, opts);
+  return uses<O>(path, inputs, opts);
 }
 
 /**
@@ -164,7 +181,7 @@ export function local(
  */
 export function wait(...targets: Array<StepRef | string>): StepRef {
   const value: unknown = targets.length === 1 ? targets[0] : targets;
-  return new StepRef("wait", { wait: value });
+  return new StepRef<string>("wait", { wait: value }, []);
 }
 
 /** Builds a step that waits for all prior background steps to complete. */
@@ -176,15 +193,15 @@ export function waitAll(opts?: WaitAllOpts): StepRef {
     pushDefined(entries, "continueOnError", opts.continueOnError);
   }
   entries.push(["waitAll", null]);
-  return stepRef("wait-all", entries);
+  return stepRef<string>("wait-all", entries, []);
 }
 
 /** Builds a step that cancels a background step. */
 export function cancel(target: StepRef | string): StepRef {
-  return new StepRef("cancel", { cancel: target });
+  return new StepRef<string>("cancel", { cancel: target }, []);
 }
 
 /** Builds a step that runs `steps` concurrently and waits for all of them. */
 export function parallel(...steps: StepRef[]): StepRef {
-  return new StepRef("parallel", { parallel: steps });
+  return new StepRef<string>("parallel", { parallel: steps }, []);
 }

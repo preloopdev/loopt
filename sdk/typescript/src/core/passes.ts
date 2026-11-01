@@ -1,9 +1,12 @@
 import { LooptError, OrderedObject, obj } from "../kit/index.ts";
 import type { DocValue } from "../kit/index.ts";
 import { JobRef } from "./job_ref.ts";
+import { checkNeeds, deriveNeeds } from "./job_refs.ts";
 import { MatrixRef, matrixDefinition } from "./matrix.ts";
 import { normalizeWorkflow } from "./normalize.ts";
+import { substituteTokens } from "./ref_tokens.ts";
 import { StepRef } from "./step_ref.ts";
+import { assignStepIds } from "./step_refs.ts";
 
 /**
  * Mutable state threaded through the assembly passes.
@@ -293,16 +296,20 @@ export function collectExplicit(context: AssembleContext): void {
 }
 
 /** Lowers a wait or cancel target to its step id. */
-function lowerTarget(value: unknown, kind: "wait" | "cancel"): string {
+function lowerTarget(
+  value: unknown,
+  kind: "wait" | "cancel",
+  context: AssembleContext,
+): string {
   if (typeof value === "string") {
     return value;
   }
   if (value instanceof StepRef) {
-    const id = value.id;
+    const id = context.stepIds.get(value) ?? value.id;
     if (id === undefined) {
       throw new LooptError(
         "missing-step-id",
-        kind + " target step needs an explicit id",
+        kind + " target step has no id and is not part of this workflow",
       );
     }
     return id;
@@ -314,15 +321,18 @@ function lowerTarget(value: unknown, kind: "wait" | "cancel"): string {
 }
 
 /** Lowers a `wait` value to one id or an array of ids. */
-function lowerWaitTargets(value: unknown): string | string[] {
+function lowerWaitTargets(
+  value: unknown,
+  context: AssembleContext,
+): string | string[] {
   if (Array.isArray(value)) {
     const ids: string[] = [];
     for (const item of value) {
-      ids.push(lowerTarget(item, "wait"));
+      ids.push(lowerTarget(item, "wait", context));
     }
     return ids;
   }
-  return lowerTarget(value, "wait");
+  return lowerTarget(value, "wait", context);
 }
 
 /** Lowers a step definition, including nested parallel and wait targets. */
@@ -330,11 +340,11 @@ function lowerStep(step: StepRef, context: AssembleContext): { [key: string]: un
   const entries: Array<[string, unknown]> = [];
   for (const [key, value] of Object.entries(step.def)) {
     if (key === "wait") {
-      entries.push([key, lowerWaitTargets(value)]);
+      entries.push([key, lowerWaitTargets(value, context)]);
       continue;
     }
     if (key === "cancel") {
-      entries.push([key, lowerTarget(value, "cancel")]);
+      entries.push([key, lowerTarget(value, "cancel", context)]);
       continue;
     }
     if (key === "parallel") {
@@ -476,6 +486,9 @@ export const PASSES: Pass[] = [
   assignJobIds,
   flattenSteps,
   collectExplicit,
+  assignStepIds,
+  deriveNeeds,
+  checkNeeds,
   lowerWorkflow,
 ];
 
@@ -513,5 +526,13 @@ export function assemble(
       "the workflow passes did not produce a document",
     );
   }
-  return normalizeWorkflow(doc as unknown as { [key: string]: DocValue });
+  const normalized = normalizeWorkflow(doc as unknown as { [key: string]: DocValue });
+  const resolved = new Map<string, string>();
+  for (const entry of context.jobs) {
+    resolved.set(entry.ref.token, entry.id);
+  }
+  for (const [step, id] of context.stepIds) {
+    resolved.set(step.token, id);
+  }
+  return substituteTokens(normalized, (token) => resolved.get(token));
 }
