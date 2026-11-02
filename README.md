@@ -1,8 +1,9 @@
 # Loopt
 
-Write GitHub Actions workflows in TypeScript, Python, Go, or Rust. Loopt
-generates standard `.github/workflows/*.yml` from that source, and can import
-existing workflow YAML into editable code.
+Write GitHub Actions workflows in any language. TypeScript, Python, Go, and
+Rust ship as first-party languages, and custom languages plug in through the
+plugin protocol. Loopt generates standard `.github/workflows/*.yml` from that
+source, and can import existing workflow YAML into editable code.
 
 Generated workflow files start with:
 
