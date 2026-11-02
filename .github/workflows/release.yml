@@ -28,8 +28,9 @@ jobs:
     - name: Build release binary
       run: cargo build --locked --release
     - name: Package
-      run: "mkdir -p dist && asset=\"loopt-${GITHUB_REF_NAME}-linux-x86_64.tar.gz\" && tar -czf \"dist/$asset\" -C target/release loopt && (cd dist && sha256sum \"$asset\" > \"$asset.sha256\")"
+      run: mkdir -p dist && asset="loopt-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" && tar -czf "dist/$asset" -C target/release loopt && (cd dist && sha256sum "$asset" > "$asset.sha256")
     - name: Publish release asset
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: "gh release view \"$GITHUB_REF_NAME\" >/dev/null 2>&1 || gh release create \"$GITHUB_REF_NAME\" --title \"$GITHUB_REF_NAME\" --generate-notes; gh release upload \"$GITHUB_REF_NAME\" dist/* --clobber"
+        GH_REPO: ${{ github.repository }}
+      run: gh release view "$GITHUB_REF_NAME" --repo "$GH_REPO" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GH_REPO" --title "$GITHUB_REF_NAME" --generate-notes; gh release upload "$GITHUB_REF_NAME" --repo "$GH_REPO" dist/* --clobber

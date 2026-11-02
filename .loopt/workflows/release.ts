@@ -37,9 +37,14 @@ const workflow = {
         },
         {
           name: "Publish release asset",
-          env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" },
+          env: {
+            GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+            // The engine's immutable-snapshot checkout leaves no github.com
+            // remote for gh to detect, so pin the repository explicitly.
+            GH_REPO: "${{ github.repository }}",
+          },
           run:
-            'gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes; gh release upload "$GITHUB_REF_NAME" dist/* --clobber',
+            'gh release view "$GITHUB_REF_NAME" --repo "$GH_REPO" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GH_REPO" --title "$GITHUB_REF_NAME" --generate-notes; gh release upload "$GITHUB_REF_NAME" --repo "$GH_REPO" dist/* --clobber',
         },
       ],
     },
