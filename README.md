@@ -103,6 +103,7 @@ See [Lint and security review](docs/lint-and-security.md) for the
 | `uses:` pin enforcement (`loopt lock`) | [Workflow lockfile](docs/workflow-lockfile.md) |
 | Out-of-tree plugin protocol and built-in languages | [Languages and plugins](docs/languages.md) |
 | `@preloopdev/sdk` (npm) and `loopt-sdk` (crates.io) | [Authoring SDKs](docs/sdks.md) |
+| Releases, registry credentials, version bumps | [Publishing](docs/publishing.md) |
 | `.loopt/` layout | [Layout](docs/layout.md) |
 
 ## Test
