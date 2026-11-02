@@ -1,6 +1,6 @@
 {
   "name": "@preloopdev/sdk",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Author GitHub Actions workflows in TypeScript: typed expressions, contexts, and workflow constructors.",
   "license": "MIT",
   "type": "module",
