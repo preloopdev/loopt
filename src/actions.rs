@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 const LOCK_PATH: &str = ".loopt/actions.lock";
 const ACTIONS_DIR: &str = ".loopt/actions";
-const DEFAULT_SDK_IMPORT: &str = "@loopt/sdk";
+const DEFAULT_SDK_IMPORT: &str = "@preloopdev/sdk";
 const LOCK_VERSION: u32 = 1;
 
 /// Run one `loopt actions` command.

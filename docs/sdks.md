@@ -6,13 +6,13 @@ emitters.
 
 | SDK | Registry | Version |
 |---|---|---|
-| `@loopt/sdk` (TypeScript) | npm | `sdk/typescript` in this repo |
+| `@preloopdev/sdk` (TypeScript) | npm | `sdk/typescript` in this repo |
 | `loopt-sdk` (Rust) | crates.io | `sdk/rust` in this repo |
 
 `scripts/publish-sdks.sh` publishes both; `scripts/publish-crates.sh`
 publishes `loopt-sdk` together with the shared `preloop-gha-*` crates.
 
-## TypeScript — `@loopt/sdk`
+## TypeScript — `@preloopdev/sdk`
 
 The reference SDK: `${{ }}` expressions (literals, operators, built-in
 functions, dynamically navigable contexts like `github`/`env`/`secrets`),
@@ -21,17 +21,17 @@ workflow/job/step constructors, `JobRef`/`StepRef` typed references to
 workflow/action types, and safe tagged `run` templates.
 
 ```sh
-npm install @loopt/sdk        # requires Node.js 26+
+npm install @preloopdev/sdk        # requires Node.js 26+
 ```
 
 The package ships raw `.ts` sources — Node 26+ type-stripping runs them
 directly. Generated action bindings (`loopt actions add`) import it as
-`@loopt/sdk` by default; `--sdk-import` overrides the specifier for local
+`@preloopdev/sdk` by default; `--sdk-import` overrides the specifier for local
 checkouts (`./sdk.ts`, a vendored copy, a pnpm workspace path).
 
 ## Rust — `loopt-sdk`
 
-`loopt-sdk` mirrors `@loopt/sdk`: typed `${{ }}` expressions plus
+`loopt-sdk` mirrors `@preloopdev/sdk`: typed `${{ }}` expressions plus
 `run`/`uses`/`job`/`workflow` constructors that assemble a workflow as an
 ordered `serde_json::Value`, with `JobRef`/`StepRef` typed references.
 

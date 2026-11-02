@@ -9,7 +9,7 @@ loopt actions add actions/checkout@v6
 
 This resolves the ref to a commit SHA through `gh api`, reads the action's
 `action.yml`, and writes `.loopt/actions/checkout.ts` plus an entry in
-`.loopt/actions.lock`. The generated module imports `@loopt/sdk` (override
+`.loopt/actions.lock`. The generated module imports `@preloopdev/sdk` (override
 for local checkouts with `--sdk-import`); pinned inputs get typed names and
 declared outputs become `StepRef` outputs, so `checkout(...).outputs.headSha`
 type-checks.

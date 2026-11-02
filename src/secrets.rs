@@ -30,7 +30,7 @@ use crate::paths;
 const INVENTORY_PATH: &str = ".loopt/secrets.json";
 const TYPESCRIPT_PATH: &str = ".loopt/secrets.ts";
 const DEFAULT_GH_BINARY: &str = "gh";
-const DEFAULT_SDK_IMPORT: &str = "@loopt/sdk";
+const DEFAULT_SDK_IMPORT: &str = "@preloopdev/sdk";
 
 /// Run `loopt secrets` with the already-separated trailing arguments.
 ///

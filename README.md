@@ -102,7 +102,7 @@ See [Lint and security review](docs/lint-and-security.md) for the
 | Names-only secret inventory (`loopt secrets sync`) | [Secrets](docs/secrets.md) |
 | `uses:` pin enforcement (`loopt lock`) | [Workflow lockfile](docs/workflow-lockfile.md) |
 | Out-of-tree plugin protocol and built-in languages | [Languages and plugins](docs/languages.md) |
-| `@loopt/sdk` (npm) and `loopt-sdk` (crates.io) | [Authoring SDKs](docs/sdks.md) |
+| `@preloopdev/sdk` (npm) and `loopt-sdk` (crates.io) | [Authoring SDKs](docs/sdks.md) |
 | `.loopt/` layout | [Layout](docs/layout.md) |
 
 ## Test

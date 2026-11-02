@@ -1,5 +1,5 @@
 {
-  "name": "@loopt/sdk",
+  "name": "@preloopdev/sdk",
   "version": "0.1.0",
   "description": "Author GitHub Actions workflows in TypeScript: typed expressions, contexts, and workflow constructors.",
   "license": "MIT",
