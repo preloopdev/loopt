@@ -19,6 +19,10 @@ import (
 // ErrMissingStepID reports a step reference used without an explicit ID.
 var ErrMissingStepID = errors.New("this step has no `id`, so its outputs/outcome/conclusion cannot be referenced")
 
+// ErrSecretsInheritConflict reports a reusable-workflow call job that sets
+// both `secrets: inherit` and explicit `secrets:` entries.
+var ErrSecretsInheritConflict = errors.New("call job cannot combine `secrets: inherit` with explicit secrets entries")
+
 // UndeclaredOutputError reports a reference to a job output the job did not
 // declare.
 type UndeclaredOutputError struct {

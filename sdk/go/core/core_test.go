@@ -131,11 +131,16 @@ func TestJobRefValidatesDeclaredOutputs(t *testing.T) {
 }
 
 func TestCallJobOutputsAreUnrestricted(t *testing.T) {
-	workflow := NewWorkflow()
-	ref := workflow.AddJob("reuse", NewCallJob("./.github/workflows/reusable.yml").
+	callJob, err := NewCallJob("./.github/workflows/reusable.yml").
 		With("target", "prod").
 		Secrets("token", expr.Secrets().Field("DEPLOY_TOKEN")).
-		Build())
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	workflow := NewWorkflow()
+	ref := workflow.AddJob("reuse", callJob)
 
 	output := mustExpr(t)(ref.Output("anything"))
 	if got, want := output.String(), "${{ needs.reuse.outputs.anything }}"; got != want {
@@ -193,7 +198,7 @@ func TestJobConcurrencyIsEmittedAfterTimeoutAndBeforeEnv(t *testing.T) {
 }
 
 func TestCallJobConcurrencyIsEmittedAfterStrategy(t *testing.T) {
-	job := NewCallJob("./.github/workflows/reusable.yml").
+	job, err := NewCallJob("./.github/workflows/reusable.yml").
 		With("target", "prod").
 		Strategy(om.New(om.F("matrix", om.New(om.F("os", []any{"ubuntu-latest"}))))).
 		Concurrency(om.New(
@@ -201,10 +206,98 @@ func TestCallJobConcurrencyIsEmittedAfterStrategy(t *testing.T) {
 			om.F("cancel-in-progress", true),
 		)).
 		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
 
 	want := `{"uses":"./.github/workflows/reusable.yml","with":{"target":"prod"},"strategy":{"matrix":{"os":["ubuntu-latest"]}},"concurrency":{"group":"deploy-${{ github.ref }}","cancel-in-progress":true}}`
 	if got := marshal(t, job.Value()); got != want {
 		t.Fatalf("call job JSON =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestWorkflowRunNameIsEmittedAfterName(t *testing.T) {
+	workflow := NewWorkflow().
+		Name("CI").
+		RunName(expr.Github().Field("ref")).
+		On("push").
+		Env("A", "1")
+
+	want := `{"name":"CI","run-name":"${{ github.ref }}","on":"push","env":{"A":"1"},"jobs":{}}`
+	if got := marshal(t, workflow.Build()); got != want {
+		t.Fatalf("workflow JSON =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestJobAdvancedFieldsAndOrder(t *testing.T) {
+	job := NewJob().
+		Name("Build").
+		If(expr.Success()).
+		Permissions(om.New(om.F("contents", "read"))).
+		RunsOn("ubuntu-latest").
+		Environment(om.New(om.F("name", "prod"), om.F("url", "https://example.com"))).
+		Container(om.New(om.F("image", "golang:1.22"))).
+		Services(om.New(om.F("redis", om.New(om.F("image", "redis:7"))))).
+		Defaults(om.New(om.F("run", om.New(om.F("shell", "bash"))))).
+		ContinueOnError(true).
+		Strategy(om.New(om.F("fail-fast", false))).
+		TimeoutMinutes(10).
+		Concurrency("deploy").
+		Env("CI", "true").
+		Step(Run("true").Build()).
+		Build()
+
+	want := `{"name":"Build","if":"${{ success() }}","permissions":{"contents":"read"},"runs-on":"ubuntu-latest","environment":{"name":"prod","url":"https://example.com"},"container":{"image":"golang:1.22"},"services":{"redis":{"image":"redis:7"}},"defaults":{"run":{"shell":"bash"}},"continue-on-error":true,"strategy":{"fail-fast":false},"timeout-minutes":10,"concurrency":"deploy","env":{"CI":"true"},"steps":[{"run":"true"}]}`
+	if got := marshal(t, job.Value()); got != want {
+		t.Fatalf("job JSON =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestJobContinueOnErrorCanBeExplicitlyFalse(t *testing.T) {
+	job := NewJob().
+		RunsOn("ubuntu-latest").
+		ContinueOnError(false).
+		Step(Run("true").Build()).
+		Build()
+
+	want := `{"runs-on":"ubuntu-latest","continue-on-error":false,"steps":[{"run":"true"}]}`
+	if got := marshal(t, job.Value()); got != want {
+		t.Fatalf("job JSON =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestCallJobPermissionsIsEmittedBeforeUses(t *testing.T) {
+	job, err := NewCallJob("./.github/workflows/reusable.yml").
+		Name("reuse").
+		Permissions(om.New(om.F("contents", "read"))).
+		With("target", "prod").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	want := `{"name":"reuse","permissions":{"contents":"read"},"uses":"./.github/workflows/reusable.yml","with":{"target":"prod"}}`
+	if got := marshal(t, job.Value()); got != want {
+		t.Fatalf("call job JSON =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestCallJobSecretsInherit(t *testing.T) {
+	job, err := NewCallJob("./.github/workflows/reusable.yml").SecretsInherit().Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	want := `{"uses":"./.github/workflows/reusable.yml","secrets":"inherit"}`
+	if got := marshal(t, job.Value()); got != want {
+		t.Fatalf("call job JSON =\n%s\nwant\n%s", got, want)
+	}
+
+	_, err = NewCallJob("./.github/workflows/reusable.yml").
+		Secrets("token", "value").
+		SecretsInherit().
+		Build()
+	if !errors.Is(err, ErrSecretsInheritConflict) {
+		t.Fatalf("conflicting secrets error = %v, want ErrSecretsInheritConflict", err)
 	}
 }
 

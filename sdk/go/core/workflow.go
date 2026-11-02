@@ -6,10 +6,11 @@ import (
 )
 
 // WorkflowBuilder constructs a whole GitHub Actions workflow document.
-// Field order on Build follows GitHub's conventional layout: name, on,
-// permissions, env, concurrency, defaults, jobs.
+// Field order on Build follows GitHub's conventional layout: name, run-name,
+// on, permissions, env, concurrency, defaults, jobs.
 type WorkflowBuilder struct {
 	name        *string
+	runName     any
 	on          any
 	permissions any
 	env         []om.Field
@@ -26,6 +27,12 @@ func NewWorkflow() *WorkflowBuilder {
 // Name sets `name:`.
 func (b *WorkflowBuilder) Name(name string) *WorkflowBuilder {
 	b.name = &name
+	return b
+}
+
+// RunName sets `run-name:`.
+func (b *WorkflowBuilder) RunName(runName any) *WorkflowBuilder {
+	b.runName = expr.Value(runName)
 	return b
 }
 
@@ -74,9 +81,12 @@ func (b *WorkflowBuilder) AddJob(id string, job Job) *JobRef {
 
 // Build finishes the workflow document.
 func (b *WorkflowBuilder) Build() *om.Object {
-	fields := make([]om.Field, 0, 7)
+	fields := make([]om.Field, 0, 8)
 	if b.name != nil {
 		fields = append(fields, om.F("name", *b.name))
+	}
+	if b.runName != nil {
+		fields = append(fields, om.F("run-name", b.runName))
 	}
 	if b.on != nil {
 		fields = append(fields, om.F("on", b.on))

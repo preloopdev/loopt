@@ -34,6 +34,12 @@ example).
 | Expression contexts | `github.event.pull_request.title`, `secrets.TOKEN`, `env.X` | `expr.Github().Field("event").Field("pull_request")…`, `expr.Secrets().Field("TOKEN")` | `github.event.pull_request.title`, `secrets.TOKEN` | `expr::github().field("event")…`, `expr::secrets().field("TOKEN")` |
 | `matrix` context | `matrixContext.os` | `expr.Matrix().Field("os")` | `matrix.os` | `expr::matrix().field("os")` |
 | `concurrency` | `concurrency:` in job/workflow def | `.Concurrency(v)` on job/workflow builders | `.concurrency(v)` | `.concurrency(v)` |
+| `permissions` | `permissions:` field | `.Permissions(v)` | `.permissions(v)` | `.permissions(v)` |
+| `environment` | `environment:` field | `.Environment(v)` | `.environment(v)` | `.environment(v)` |
+| `container` / `services` | `container:`/`services:` fields | `.Container(v)` / `.Services(v)` | `.container(v)` / `.services(v)` | `.container(v)` / `.services(v)` |
+| `defaults` / `continue-on-error` | `defaults:`/`continue-on-error:` fields | `.Defaults(v)` / `.ContinueOnError(bool)` | `.defaults(v)` / `.continue_on_error(v)` | `.defaults(v)` / `.continue_on_error(v)` |
+| `run-name` | `run-name:` field | `.RunName(v)` | `.run_name(v)` | `.run_name(v)` |
+| `secrets: inherit` | `secrets: "inherit"` on call jobs | `.SecretsInherit()` | `.secrets_inherit()` | `.secrets_inherit()` |
 | Literal | `lit("x")`, `operand(v)` | `expr.Lit(v)`, `expr.Operand(v)` | `lit(v)`, `operand(v)` | `expr::lit(v)`, `expr::operand(v)` |
 | Operators | `eq(a,b) ne lt lte gt gte and or not at star` | `expr.Eq Ne Lt Le Gt Ge And Or Not At Star` | `eq ne lt le gt ge and_ or_ not_ at star` | `expr::eq ne lt le gt ge and or not at star` |
 | Functions | `contains startsWith endsWith format join toJSON fromJSON hashFiles caseOf` | `expr.Contains StartsWith EndsWith Format Join ToJSON FromJSON HashFiles Case` | `contains starts_with ends_with format join to_json from_json hash_files case_of` | `expr::contains starts_with …` (snake_case) |

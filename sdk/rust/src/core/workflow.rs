@@ -10,11 +10,12 @@ pub fn workflow() -> WorkflowBuilder {
 }
 
 /// A workflow under construction. Field order on [`WorkflowBuilder::build`]
-/// follows GitHub's conventional layout: `name`, `on`, `permissions`,
-/// `env`, `concurrency`, `defaults`, `jobs`.
+/// follows GitHub's conventional layout: `name`, `run-name`, `on`,
+/// `permissions`, `env`, `concurrency`, `defaults`, `jobs`.
 #[derive(Debug, Clone, Default)]
 pub struct WorkflowBuilder {
     name: Option<String>,
+    run_name: Option<Value>,
     on: Option<Value>,
     permissions: Option<Value>,
     env: Vec<(String, Value)>,
@@ -37,6 +38,12 @@ impl WorkflowBuilder {
     /// Sets `on:`.
     pub fn on(mut self, on: impl Into<Value>) -> WorkflowBuilder {
         self.on = Some(on.into());
+        self
+    }
+
+    /// Sets `run-name:` — the display name for the workflow run.
+    pub fn run_name(mut self, run_name: impl Into<Value>) -> WorkflowBuilder {
+        self.run_name = Some(run_name.into());
         self
     }
 
@@ -79,6 +86,9 @@ impl WorkflowBuilder {
         let mut map = Map::new();
         if let Some(name) = self.name {
             map.insert("name".to_string(), Value::String(name));
+        }
+        if let Some(run_name) = self.run_name {
+            map.insert("run-name".to_string(), run_name);
         }
         if let Some(on) = self.on {
             map.insert("on".to_string(), on);

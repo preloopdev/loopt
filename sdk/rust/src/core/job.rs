@@ -89,18 +89,28 @@ pub fn job() -> JobBuilder {
 
 /// A regular job under construction. Field order on [`JobBuilder::build`]
 /// follows GitHub's conventional layout: `name`, `needs`, `if`, `runs-on`,
-/// `strategy`, `timeout-minutes`, `concurrency`, `env`, `outputs`, `steps`.
+/// `permissions`, `environment`, `concurrency`, `container`, `services`,
+/// `defaults`, `continue-on-error`, `strategy`, `timeout-minutes`,
+/// `cancel-timeout-minutes`, `env`, `outputs`, `snapshot`, `steps`.
 #[derive(Debug, Clone, Default)]
 pub struct JobBuilder {
     name: Option<String>,
     needs: Vec<String>,
     if_cond: Option<Expr>,
     runs_on: Option<Value>,
+    permissions: Option<Value>,
+    environment: Option<Value>,
+    concurrency: Option<Value>,
+    container: Option<Value>,
+    services: Option<Value>,
+    defaults: Option<Value>,
+    continue_on_error: Option<bool>,
     strategy: Option<Value>,
     timeout_minutes: Option<i64>,
-    concurrency: Option<Value>,
+    cancel_timeout_minutes: Option<i64>,
     env: Vec<(String, Value)>,
     outputs: Vec<(String, Value)>,
+    snapshot: Option<Value>,
     steps: Vec<StepRef>,
 }
 
@@ -127,6 +137,18 @@ impl JobBuilder {
         self
     }
 
+    /// Sets `permissions:` for the job's `GITHUB_TOKEN`.
+    pub fn permissions(mut self, permissions: impl Into<Value>) -> JobBuilder {
+        self.permissions = Some(permissions.into());
+        self
+    }
+
+    /// Sets `environment:` — a name string or `{name, url}` map.
+    pub fn environment(mut self, environment: impl Into<Value>) -> JobBuilder {
+        self.environment = Some(environment.into());
+        self
+    }
+
     /// Sets `runs-on:`.
     pub fn runs_on(mut self, runner: impl Into<Value>) -> JobBuilder {
         self.runs_on = Some(runner.into());
@@ -149,6 +171,42 @@ impl JobBuilder {
     /// `cancel-in-progress`.
     pub fn concurrency(mut self, concurrency: impl Into<Value>) -> JobBuilder {
         self.concurrency = Some(concurrency.into());
+        self
+    }
+
+    /// Sets `container:` — the job's container image or spec.
+    pub fn container(mut self, container: impl Into<Value>) -> JobBuilder {
+        self.container = Some(container.into());
+        self
+    }
+
+    /// Sets `services:` — sidecar service containers.
+    pub fn services(mut self, services: impl Into<Value>) -> JobBuilder {
+        self.services = Some(services.into());
+        self
+    }
+
+    /// Sets `defaults:` — default `run:` settings for the job's steps.
+    pub fn defaults(mut self, defaults: impl Into<Value>) -> JobBuilder {
+        self.defaults = Some(defaults.into());
+        self
+    }
+
+    /// Sets `continue-on-error:`.
+    pub fn continue_on_error(mut self, value: bool) -> JobBuilder {
+        self.continue_on_error = Some(value);
+        self
+    }
+
+    /// Sets `cancel-timeout-minutes:`.
+    pub fn cancel_timeout_minutes(mut self, minutes: i64) -> JobBuilder {
+        self.cancel_timeout_minutes = Some(minutes);
+        self
+    }
+
+    /// Sets `snapshot:` — a custom runner image to create/update after the job.
+    pub fn snapshot(mut self, snapshot: impl Into<Value>) -> JobBuilder {
+        self.snapshot = Some(snapshot.into());
         self
     }
 
@@ -191,14 +249,41 @@ impl JobBuilder {
         if let Some(runs_on) = self.runs_on {
             map.insert("runs-on".to_string(), runs_on);
         }
+        if let Some(permissions) = self.permissions {
+            map.insert("permissions".to_string(), permissions);
+        }
+        if let Some(environment) = self.environment {
+            map.insert("environment".to_string(), environment);
+        }
+        if let Some(concurrency) = self.concurrency {
+            map.insert("concurrency".to_string(), concurrency);
+        }
+        if let Some(container) = self.container {
+            map.insert("container".to_string(), container);
+        }
+        if let Some(services) = self.services {
+            map.insert("services".to_string(), services);
+        }
+        if let Some(defaults) = self.defaults {
+            map.insert("defaults".to_string(), defaults);
+        }
+        if let Some(continue_on_error) = self.continue_on_error {
+            map.insert(
+                "continue-on-error".to_string(),
+                Value::Bool(continue_on_error),
+            );
+        }
         if let Some(strategy) = self.strategy {
             map.insert("strategy".to_string(), strategy);
         }
         if let Some(minutes) = self.timeout_minutes {
             map.insert("timeout-minutes".to_string(), Value::Number(minutes.into()));
         }
-        if let Some(concurrency) = self.concurrency {
-            map.insert("concurrency".to_string(), concurrency);
+        if let Some(minutes) = self.cancel_timeout_minutes {
+            map.insert(
+                "cancel-timeout-minutes".to_string(),
+                Value::Number(minutes.into()),
+            );
         }
         if !self.env.is_empty() {
             let mut env = Map::new();
@@ -219,6 +304,9 @@ impl JobBuilder {
             }
             map.insert("outputs".to_string(), Value::Object(outputs));
         }
+        if let Some(snapshot) = self.snapshot {
+            map.insert("snapshot".to_string(), snapshot);
+        }
         map.insert(
             "steps".to_string(),
             Value::Array(self.steps.into_iter().map(StepRef::into_value).collect()),
@@ -237,7 +325,8 @@ pub fn call_workflow(uses: impl Into<String>) -> CallJobBuilder {
 
 /// A reusable-workflow caller job under construction. Field order on
 /// [`CallJobBuilder::build`] follows GitHub's conventional layout: `name`,
-/// `needs`, `if`, `uses`, `with`, `secrets`, `strategy`, `concurrency`.
+/// `needs`, `if`, `uses`, `with`, `secrets`, `strategy`, `concurrency`,
+/// `permissions`.
 #[derive(Debug, Clone)]
 pub struct CallJobBuilder {
     name: Option<String>,
@@ -246,8 +335,10 @@ pub struct CallJobBuilder {
     uses: String,
     with: Vec<(String, Value)>,
     secrets: Vec<(String, Value)>,
+    secrets_inherit: bool,
     strategy: Option<Value>,
     concurrency: Option<Value>,
+    permissions: Option<Value>,
 }
 
 impl CallJobBuilder {
@@ -259,8 +350,10 @@ impl CallJobBuilder {
             uses,
             with: Vec::new(),
             secrets: Vec::new(),
+            secrets_inherit: false,
             strategy: None,
             concurrency: None,
+            permissions: None,
         }
     }
 
@@ -294,6 +387,14 @@ impl CallJobBuilder {
         self
     }
 
+    /// Sets `secrets: inherit`, passing all caller secrets through.
+    /// Mutually exclusive with [`CallJobBuilder::secrets`] — `build`
+    /// returns an error when both are used.
+    pub fn secrets_inherit(mut self) -> CallJobBuilder {
+        self.secrets_inherit = true;
+        self
+    }
+
     /// Sets `strategy:` (including its `matrix:` sub-key).
     pub fn strategy(mut self, strategy: impl Into<Value>) -> CallJobBuilder {
         self.strategy = Some(strategy.into());
@@ -307,10 +408,22 @@ impl CallJobBuilder {
         self
     }
 
+    /// Sets `permissions:` for the call job's `GITHUB_TOKEN`.
+    pub fn permissions(mut self, permissions: impl Into<Value>) -> CallJobBuilder {
+        self.permissions = Some(permissions.into());
+        self
+    }
+
     /// Finishes the job. Its outputs are never declared, so
     /// [`JobRef::output`] accepts any name for the returned reference,
     /// matching the TypeScript SDK's reusable-workflow calls.
-    pub fn build(self) -> Job {
+    ///
+    /// Returns an error when `secrets:` entries and `secrets: inherit`
+    /// were both configured.
+    pub fn build(self) -> Result<Job> {
+        if self.secrets_inherit && !self.secrets.is_empty() {
+            return Err(Error::AmbiguousSecrets);
+        }
         let mut map = Map::new();
         if let Some(name) = self.name {
             map.insert("name".to_string(), Value::String(name));
@@ -341,15 +454,21 @@ impl CallJobBuilder {
             }
             map.insert("secrets".to_string(), Value::Object(secrets));
         }
+        if self.secrets_inherit {
+            map.insert("secrets".to_string(), Value::String("inherit".to_string()));
+        }
         if let Some(strategy) = self.strategy {
             map.insert("strategy".to_string(), strategy);
         }
         if let Some(concurrency) = self.concurrency {
             map.insert("concurrency".to_string(), concurrency);
         }
-        Job {
+        if let Some(permissions) = self.permissions {
+            map.insert("permissions".to_string(), permissions);
+        }
+        Ok(Job {
             value: Value::Object(map),
             declared_outputs: None,
-        }
+        })
     }
 }

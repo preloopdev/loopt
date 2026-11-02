@@ -236,8 +236,10 @@ class JobBuilder:
     """A regular job (``runs-on:``) under construction.
 
     Field order on :meth:`build` follows GitHub's conventional layout:
-    ``name``, ``needs``, ``if``, ``runs-on``, ``strategy``,
-    ``timeout-minutes``, ``concurrency``, ``env``, ``outputs``, ``steps``.
+    ``name``, ``needs``, ``if``, ``runs-on``, ``permissions``,
+    ``environment``, ``concurrency``, ``container``, ``services``,
+    ``defaults``, ``continue-on-error``, ``strategy``, ``timeout-minutes``,
+    ``env``, ``outputs``, ``steps``.
     """
 
     def __init__(self) -> None:
@@ -245,9 +247,15 @@ class JobBuilder:
         self._needs: list[str] = []
         self._if: str | None = None
         self._runs_on: Any = None
+        self._permissions: Any = None
+        self._environment: Any = None
+        self._concurrency: Any = None
+        self._container: Any = None
+        self._services: Any = None
+        self._defaults: Any = None
+        self._continue_on_error: bool | None = None
         self._strategy: Any = None
         self._timeout_minutes: int | None = None
-        self._concurrency: Any = None
         self._env: list[tuple[str, Any]] = []
         self._outputs: list[tuple[str, Any]] = []
         self._steps: list[StepRef] = []
@@ -272,6 +280,16 @@ class JobBuilder:
         self._runs_on = _to_value(runner)
         return self
 
+    def permissions(self, permissions: Any) -> "JobBuilder":
+        """Set ``permissions:``."""
+        self._permissions = _to_value(permissions)
+        return self
+
+    def environment(self, environment: Any) -> "JobBuilder":
+        """Set ``environment:`` (a name string or a name/url mapping)."""
+        self._environment = _to_value(environment)
+        return self
+
     def strategy(self, strategy: Any) -> "JobBuilder":
         """Set ``strategy:`` (including its ``matrix:`` sub-key)."""
         self._strategy = _to_value(strategy)
@@ -285,6 +303,26 @@ class JobBuilder:
     def concurrency(self, concurrency: Any) -> "JobBuilder":
         """Set ``concurrency:`` (a group string or group/cancel mapping)."""
         self._concurrency = _to_value(concurrency)
+        return self
+
+    def container(self, container: Any) -> "JobBuilder":
+        """Set ``container:`` (an image string or container mapping)."""
+        self._container = _to_value(container)
+        return self
+
+    def services(self, services: Any) -> "JobBuilder":
+        """Set ``services:`` (a mapping of service name to container)."""
+        self._services = _to_value(services)
+        return self
+
+    def defaults(self, defaults: Any) -> "JobBuilder":
+        """Set ``defaults:``."""
+        self._defaults = _to_value(defaults)
+        return self
+
+    def continue_on_error(self, value: bool) -> "JobBuilder":
+        """Set ``continue-on-error:``."""
+        self._continue_on_error = bool(value)
         return self
 
     def env(self, key: str, value: Any) -> "JobBuilder":
@@ -315,12 +353,24 @@ class JobBuilder:
             value["if"] = self._if
         if self._runs_on is not None:
             value["runs-on"] = self._runs_on
+        if self._permissions is not None:
+            value["permissions"] = self._permissions
+        if self._environment is not None:
+            value["environment"] = self._environment
+        if self._concurrency is not None:
+            value["concurrency"] = self._concurrency
+        if self._container is not None:
+            value["container"] = self._container
+        if self._services is not None:
+            value["services"] = self._services
+        if self._defaults is not None:
+            value["defaults"] = self._defaults
+        if self._continue_on_error is not None:
+            value["continue-on-error"] = self._continue_on_error
         if self._strategy is not None:
             value["strategy"] = self._strategy
         if self._timeout_minutes is not None:
             value["timeout-minutes"] = self._timeout_minutes
-        if self._concurrency is not None:
-            value["concurrency"] = self._concurrency
         if self._env:
             value["env"] = dict(self._env)
         declared_outputs = [name for name, _ in self._outputs]
@@ -334,17 +384,21 @@ class CallJobBuilder:
     """A reusable-workflow caller job (``uses:``) under construction.
 
     Field order on :meth:`build` follows GitHub's conventional layout:
-    ``name``, ``needs``, ``if``, ``uses``, ``with``, ``secrets``,
-    ``strategy``, ``concurrency``.
+    ``name``, ``needs``, ``if``, ``permissions``, ``uses``, ``with``,
+    ``secrets``, ``strategy``, ``concurrency``. ``secrets`` is either a
+    mapping from :meth:`secrets` or ``"inherit"`` from
+    :meth:`secrets_inherit`.
     """
 
     def __init__(self, uses: str) -> None:
         self._name: str | None = None
         self._needs: list[str] = []
         self._if: str | None = None
+        self._permissions: Any = None
         self._uses = str(uses)
         self._with: list[tuple[str, Any]] = []
         self._secrets: list[tuple[str, Any]] = []
+        self._secrets_inherit = False
         self._strategy: Any = None
         self._concurrency: Any = None
 
@@ -363,6 +417,11 @@ class CallJobBuilder:
         self._if = _condition(condition)
         return self
 
+    def permissions(self, permissions: Any) -> "CallJobBuilder":
+        """Set ``permissions:``."""
+        self._permissions = _to_value(permissions)
+        return self
+
     def with_(self, key: str, value: Any) -> "CallJobBuilder":
         """Append one ``with:`` entry, preserving call order."""
         self._with.append((str(key), _to_value(value)))
@@ -371,6 +430,11 @@ class CallJobBuilder:
     def secrets(self, key: str, value: Any) -> "CallJobBuilder":
         """Append one ``secrets:`` entry, preserving call order."""
         self._secrets.append((str(key), _to_value(value)))
+        return self
+
+    def secrets_inherit(self) -> "CallJobBuilder":
+        """Pass all caller secrets to the called workflow (``secrets: inherit``)."""
+        self._secrets_inherit = True
         return self
 
     def strategy(self, strategy: Any) -> "CallJobBuilder":
@@ -385,6 +449,11 @@ class CallJobBuilder:
 
     def build(self) -> Job:
         """Finish the job."""
+        if self._secrets and self._secrets_inherit:
+            raise LooptSDKError(
+                "conflicting_secrets",
+                "secrets() entries and secrets_inherit() cannot be combined",
+            )
         value: dict[str, Any] = {}
         if self._name is not None:
             value["name"] = self._name
@@ -394,10 +463,14 @@ class CallJobBuilder:
             )
         if self._if is not None:
             value["if"] = self._if
+        if self._permissions is not None:
+            value["permissions"] = self._permissions
         value["uses"] = self._uses
         if self._with:
             value["with"] = dict(self._with)
-        if self._secrets:
+        if self._secrets_inherit:
+            value["secrets"] = "inherit"
+        elif self._secrets:
             value["secrets"] = dict(self._secrets)
         if self._strategy is not None:
             value["strategy"] = self._strategy
@@ -407,10 +480,16 @@ class CallJobBuilder:
 
 
 class WorkflowBuilder:
-    """A whole workflow document under construction."""
+    """A whole workflow document under construction.
+
+    Field order on :meth:`build` follows GitHub's conventional layout:
+    ``name``, ``run-name``, ``on``, ``permissions``, ``env``,
+    ``concurrency``, ``defaults``, ``jobs``.
+    """
 
     def __init__(self) -> None:
         self._name: str | None = None
+        self._run_name: Any = None
         self._on: Any = None
         self._permissions: Any = None
         self._env: list[tuple[str, Any]] = []
@@ -421,6 +500,11 @@ class WorkflowBuilder:
     def name(self, name: str) -> "WorkflowBuilder":
         """Set ``name:``."""
         self._name = str(name)
+        return self
+
+    def run_name(self, run_name: Any) -> "WorkflowBuilder":
+        """Set ``run-name:`` (the display name for individual runs)."""
+        self._run_name = _to_value(run_name)
         return self
 
     def on_(self, on: Any) -> "WorkflowBuilder":
@@ -458,6 +542,8 @@ class WorkflowBuilder:
         value: dict[str, Any] = {}
         if self._name is not None:
             value["name"] = self._name
+        if self._run_name is not None:
+            value["run-name"] = self._run_name
         if self._on is not None:
             value["on"] = self._on
         if self._permissions is not None:

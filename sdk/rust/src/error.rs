@@ -49,6 +49,9 @@ pub enum Error {
     /// [`crate::core::StepRef::output`], `.outcome()`, or `.conclusion()`
     /// was called on a step that was never given an explicit `.id(...)`.
     MissingStepId,
+    /// [`crate::core::CallJobBuilder`] was given both explicit `secrets:`
+    /// entries and `secrets: inherit`, which cannot coexist.
+    AmbiguousSecrets,
 }
 
 impl fmt::Display for Error {
@@ -95,6 +98,10 @@ impl fmt::Display for Error {
             Error::MissingStepId => write!(
                 f,
                 "this step has no `id`, so its outputs/outcome/conclusion cannot be referenced"
+            ),
+            Error::AmbiguousSecrets => write!(
+                f,
+                "choose `secrets: inherit` or explicit secrets: entries, not both"
             ),
         }
     }

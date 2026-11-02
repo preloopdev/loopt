@@ -96,8 +96,8 @@ fn job_builds_ordered_fields_and_declares_outputs() {
         vec![
             "name",
             "runs-on",
-            "timeout-minutes",
             "concurrency",
+            "timeout-minutes",
             "env",
             "outputs",
             "steps"
@@ -107,6 +107,72 @@ fn job_builds_ordered_fields_and_declares_outputs() {
         build.value()["steps"].as_array().unwrap().len(),
         1,
         "step must land in the steps array"
+    );
+}
+
+#[test]
+fn job_new_fields_emit_in_declared_order() {
+    let build = job()
+        .runs_on("ubuntu-latest")
+        .permissions(serde_json::json!({"contents": "read"}))
+        .environment("prod")
+        .concurrency("deploy-${{ github.ref }}")
+        .container("node:20")
+        .services(serde_json::json!({"postgres": {"image": "postgres:16"}}))
+        .defaults(serde_json::json!({"run": {"shell": "bash"}}))
+        .continue_on_error(true)
+        .strategy(serde_json::json!({"matrix": {"os": ["ubuntu-latest"]}}))
+        .timeout_minutes(10)
+        .cancel_timeout_minutes(5)
+        .snapshot("snap")
+        .step(run("echo hi").build())
+        .build();
+
+    let keys: Vec<&String> = build.value().as_object().unwrap().keys().collect();
+    assert_eq!(
+        keys,
+        vec![
+            "runs-on",
+            "permissions",
+            "environment",
+            "concurrency",
+            "container",
+            "services",
+            "defaults",
+            "continue-on-error",
+            "strategy",
+            "timeout-minutes",
+            "cancel-timeout-minutes",
+            "snapshot",
+            "steps"
+        ]
+    );
+    assert_eq!(
+        build.value()["permissions"],
+        serde_json::json!({"contents": "read"})
+    );
+    assert_eq!(build.value()["environment"], serde_json::json!("prod"));
+    assert_eq!(build.value()["continue-on-error"], serde_json::json!(true));
+}
+
+#[test]
+fn call_workflow_secrets_inherit_conflicts_with_explicit_entries() {
+    let error = call_workflow("./.github/workflows/reusable.yml")
+        .secrets("token", "${{ secrets.TOKEN }}")
+        .secrets_inherit()
+        .build()
+        .unwrap_err();
+    assert!(matches!(error, Error::AmbiguousSecrets));
+
+    let job = call_workflow("./.github/workflows/reusable.yml")
+        .secrets_inherit()
+        .permissions(serde_json::json!({"packages": "read"}))
+        .build()
+        .expect("inherit alone is valid");
+    assert_eq!(job.value()["secrets"], serde_json::json!("inherit"));
+    assert_eq!(
+        job.value()["permissions"],
+        serde_json::json!({"packages": "read"})
     );
 }
 
@@ -163,7 +229,8 @@ fn call_workflow_job_declares_no_restricted_outputs() {
             .with("flag", true)
             .secrets("token", "${{ secrets.TOKEN }}")
             .concurrency("call-${{ github.ref }}")
-            .build(),
+            .build()
+            .expect("call job builds"),
     );
     let document = wf.build();
 
@@ -212,4 +279,17 @@ fn workflow_builds_fields_in_github_conventional_order() {
 fn workflow_with_no_optional_fields_still_has_jobs() {
     let document = workflow().build();
     assert_eq!(document, json!({"jobs": {}}));
+}
+
+#[test]
+fn workflow_run_name_emits_after_name() {
+    let (wf, _r) = workflow()
+        .name("CI")
+        .run_name("run ${{ github.run_number }}")
+        .job("build", job().runs_on("ubuntu-latest").build());
+    let document = wf.build();
+    let keys: Vec<&String> = document.as_object().unwrap().keys().collect();
+    assert_eq!(keys[0], "name");
+    assert_eq!(keys[1], "run-name");
+    assert_eq!(document["run-name"], json!("run ${{ github.run_number }}"));
 }

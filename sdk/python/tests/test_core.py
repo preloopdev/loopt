@@ -125,7 +125,7 @@ class JobTests(unittest.TestCase):
             [step["id"] for step in value.value["steps"]], ["build", "test"]
         )
 
-    def test_concurrency_sits_between_timeout_minutes_and_env(self) -> None:
+    def test_concurrency_sits_before_strategy_and_timeout_minutes(self) -> None:
         value = (
             job()
             .runs_on("ubuntu-latest")
@@ -138,12 +138,68 @@ class JobTests(unittest.TestCase):
         )
         self.assertEqual(
             list(value.value),
-            ["runs-on", "timeout-minutes", "concurrency", "env", "steps"],
+            ["runs-on", "concurrency", "timeout-minutes", "env", "steps"],
         )
         self.assertEqual(
             value.value["concurrency"],
             {"group": "ci-${{ github.ref }}", "cancel-in-progress": True},
         )
+
+    def test_job_emits_the_full_conventional_key_order(self) -> None:
+        value = (
+            job()
+            .name("build")
+            .needs(["lint"])
+            .if_cond(github.ref)
+            .runs_on("ubuntu-latest")
+            .permissions({"contents": "read"})
+            .environment({"name": "production", "url": "https://example.com"})
+            .concurrency({"group": "ci", "cancel-in-progress": False})
+            .container("node:20")
+            .services({"redis": {"image": "redis:7"}})
+            .defaults({"run": {"shell": "bash"}})
+            .continue_on_error(True)
+            .strategy({"matrix": {"os": ["ubuntu-latest"]}})
+            .timeout_minutes(10)
+            .env("CI", "true")
+            .output("artifact", "dist.zip")
+            .step(run("make").id("build").build())
+            .build()
+        )
+        self.assertEqual(
+            list(value.value),
+            [
+                "name",
+                "needs",
+                "if",
+                "runs-on",
+                "permissions",
+                "environment",
+                "concurrency",
+                "container",
+                "services",
+                "defaults",
+                "continue-on-error",
+                "strategy",
+                "timeout-minutes",
+                "env",
+                "outputs",
+                "steps",
+            ],
+        )
+        self.assertEqual(value.value["permissions"], {"contents": "read"})
+        self.assertEqual(
+            value.value["environment"],
+            {"name": "production", "url": "https://example.com"},
+        )
+        self.assertEqual(value.value["container"], "node:20")
+        self.assertEqual(value.value["services"], {"redis": {"image": "redis:7"}})
+        self.assertEqual(value.value["defaults"], {"run": {"shell": "bash"}})
+        self.assertIs(value.value["continue-on-error"], True)
+
+    def test_environment_accepts_a_name_string(self) -> None:
+        value = job().runs_on("ubuntu-latest").environment("production").build()
+        self.assertEqual(value.value["environment"], "production")
 
     def test_needs_is_a_string_for_one_job_and_a_list_for_many(self) -> None:
         wf = workflow()
@@ -225,6 +281,57 @@ class CallWorkflowTests(unittest.TestCase):
             {"group": "reuse-${{ github.ref }}", "cancel-in-progress": False},
         )
 
+    def test_caller_permissions_sit_after_if_before_uses(self) -> None:
+        value = (
+            call_workflow("./.github/workflows/reusable.yml")
+            .name("reuse")
+            .if_cond(eq(github.ref, "refs/heads/main"))
+            .permissions({"contents": "read", "id-token": "write"})
+            .with_("target", "production")
+            .strategy({"matrix": {"target": ["production"]}})
+            .concurrency("reuse")
+            .build()
+        )
+        self.assertEqual(
+            list(value.value),
+            [
+                "name",
+                "if",
+                "permissions",
+                "uses",
+                "with",
+                "strategy",
+                "concurrency",
+            ],
+        )
+        self.assertEqual(
+            value.value["permissions"],
+            {"contents": "read", "id-token": "write"},
+        )
+
+    def test_caller_secrets_inherit_emits_the_string(self) -> None:
+        value = (
+            call_workflow("./.github/workflows/reusable.yml")
+            .with_("target", "production")
+            .secrets_inherit()
+            .build()
+        )
+        self.assertEqual(
+            list(value.value), ["uses", "with", "secrets"]
+        )
+        self.assertEqual(value.value["secrets"], "inherit")
+
+    def test_caller_secrets_and_inherit_together_fail_loudly(self) -> None:
+        builder = (
+            call_workflow("./.github/workflows/reusable.yml")
+            .secrets("token", secrets.DEPLOY_TOKEN)
+            .secrets_inherit()
+        )
+        with self.assertRaises(LooptSDKError) as raised:
+            builder.build()
+        self.assertEqual(raised.exception.code, "conflicting_secrets")
+        self.assertIn("secrets_inherit", str(raised.exception))
+
     def test_caller_outputs_are_not_validated(self) -> None:
         wf = workflow()
         ref = wf.job(
@@ -262,6 +369,35 @@ class WorkflowTests(unittest.TestCase):
             document["on"],
             {"push": {"branches": ["main"]}, "pull_request": {}},
         )
+
+    def test_run_name_sits_right_after_name(self) -> None:
+        wf = (
+            workflow()
+            .name("CI")
+            .run_name("CI-${{ github.ref }}")
+            .on_("push")
+            .permissions({"contents": "read"})
+            .env("CI", "true")
+            .concurrency("ci")
+            .defaults({"run": {"shell": "bash"}})
+        )
+        wf.job("build", job().runs_on("ubuntu-latest").build())
+
+        document = wf.build()
+        self.assertEqual(
+            list(document),
+            [
+                "name",
+                "run-name",
+                "on",
+                "permissions",
+                "env",
+                "concurrency",
+                "defaults",
+                "jobs",
+            ],
+        )
+        self.assertEqual(document["run-name"], "CI-${{ github.ref }}")
 
     def test_job_expression_is_rendered_in_concurrency(self) -> None:
         wf = workflow().concurrency(github.ref)

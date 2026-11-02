@@ -13,7 +13,7 @@ class LooptSDKError(ValueError):
 
     ``code`` is one of ``empty_expression``, ``forbidden_delimiter``,
     ``non_finite_precedence``, ``non_finite_number``, ``invalid_arity``,
-    ``undeclared_output`` or ``missing_step_id``.
+    ``undeclared_output``, ``missing_step_id`` or ``conflicting_secrets``.
     """
 
     def __init__(self, code: str, message: str) -> None:
