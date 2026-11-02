@@ -36,6 +36,8 @@ pub mod manifest;
 pub mod paths;
 /// The `loopt plugin <language>` process protocol.
 pub mod plugin;
+/// Vendored TypeScript SDK written to `.loopt/sdk/typescript`.
+pub mod sdk_ts;
 /// Names-only secret inventory synchronization.
 pub mod secrets;
 /// `shellcheck` integration for workflow `run:` scripts.

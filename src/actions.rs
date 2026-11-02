@@ -21,7 +21,9 @@ use sha2::{Digest, Sha256};
 
 const LOCK_PATH: &str = ".loopt/actions.lock";
 const ACTIONS_DIR: &str = ".loopt/actions";
-const DEFAULT_SDK_IMPORT: &str = "@preloopdev/sdk";
+/// Default import for generated bindings under `.loopt/actions/` — the
+/// vendored SDK at `.loopt/sdk/typescript`, one level up.
+const DEFAULT_SDK_IMPORT: &str = "../sdk/typescript/index.ts";
 const LOCK_VERSION: u32 = 1;
 
 /// Run one `loopt actions` command.
@@ -102,6 +104,9 @@ fn add(root: &Path, args: &[String]) -> Result<()> {
         .sdk_import
         .clone()
         .unwrap_or_else(|| DEFAULT_SDK_IMPORT.to_string());
+    if options.sdk_import.is_none() {
+        crate::sdk_ts::vendor(root)?;
+    }
     let entry = build_entry(name, source, requested_ref, resolved, patches, sdk_import)?;
     write_new_entry(root, &mut lock, entry, options.force)
 }
@@ -162,6 +167,9 @@ fn update(root: &Path, args: &[String]) -> Result<()> {
         .sdk_import
         .clone()
         .unwrap_or_else(|| old.sdk_import.clone());
+    if sdk_import == DEFAULT_SDK_IMPORT {
+        crate::sdk_ts::vendor(root)?;
+    }
     let entry = build_entry(name, source, requested_ref, resolved, patches, sdk_import)?;
 
     let old_path = old.generated.clone();

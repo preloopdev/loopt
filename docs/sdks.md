@@ -20,14 +20,20 @@ workflow/job/step constructors, `JobRef`/`StepRef` typed references to
 `needs.<id>.outputs.<name>` and `steps.<id>.outputs.<name>`, schema-generated
 workflow/action types, and safe tagged `run` templates.
 
+**No npm install needed**: `loopt actions add` and `loopt secrets sync`
+vendor the SDK source into `.loopt/sdk/typescript` (embedded in the `loopt`
+binary, always matching its version) and generate imports pointing at that
+relative path. The vendored copy runs directly under Node 26+.
+
+When `@preloopdev/sdk` is published on npm you can opt into it instead:
+
 ```sh
 npm install @preloopdev/sdk        # requires Node.js 26+
+loopt actions add actions/checkout@v6 --sdk-import @preloopdev/sdk
 ```
 
 The package ships raw `.ts` sources — Node 26+ type-stripping runs them
-directly. Generated action bindings (`loopt actions add`) import it as
-`@preloopdev/sdk` by default; `--sdk-import` overrides the specifier for local
-checkouts (`./sdk.ts`, a vendored copy, a pnpm workspace path).
+directly.
 
 ## Rust — `loopt-sdk`
 

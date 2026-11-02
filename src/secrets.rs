@@ -241,6 +241,11 @@ fn sync(root: &Path, options: &SyncOptions) -> Result<()> {
         options.sdk_import.as_deref().unwrap_or(DEFAULT_SDK_IMPORT),
     );
 
+    // Vendor the SDK only when the generated `secrets.ts` will import it.
+    if options.sdk_import.is_none() {
+        crate::sdk_ts::vendor(root)?;
+    }
+
     // No output is touched until every authenticated request above has
     // completed and all response names have been validated.  `write_atomic`
     // additionally rejects symlinked parents and destinations.

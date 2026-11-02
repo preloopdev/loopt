@@ -10,6 +10,7 @@
       Cargo.toml
   sdk/
     rust/                vendored loopt-sdk (written by `import --language rust`)
+    typescript/          vendored TypeScript SDK (written by actions/secrets)
   actions/               generated typed action bindings (loopt actions add)
   actions.lock           typed-binding pins (see docs/action-bindings.md)
   secrets.json           names-only secret inventory (loopt secrets sync)
