@@ -89,7 +89,7 @@ pub fn job() -> JobBuilder {
 
 /// A regular job under construction. Field order on [`JobBuilder::build`]
 /// follows GitHub's conventional layout: `name`, `needs`, `if`, `runs-on`,
-/// `strategy`, `timeout-minutes`, `env`, `outputs`, `steps`.
+/// `strategy`, `timeout-minutes`, `concurrency`, `env`, `outputs`, `steps`.
 #[derive(Debug, Clone, Default)]
 pub struct JobBuilder {
     name: Option<String>,
@@ -98,6 +98,7 @@ pub struct JobBuilder {
     runs_on: Option<Value>,
     strategy: Option<Value>,
     timeout_minutes: Option<i64>,
+    concurrency: Option<Value>,
     env: Vec<(String, Value)>,
     outputs: Vec<(String, Value)>,
     steps: Vec<StepRef>,
@@ -141,6 +142,13 @@ impl JobBuilder {
     /// Sets `timeout-minutes:`.
     pub fn timeout_minutes(mut self, minutes: i64) -> JobBuilder {
         self.timeout_minutes = Some(minutes);
+        self
+    }
+
+    /// Sets `concurrency:` — a group string or an object with `group` and
+    /// `cancel-in-progress`.
+    pub fn concurrency(mut self, concurrency: impl Into<Value>) -> JobBuilder {
+        self.concurrency = Some(concurrency.into());
         self
     }
 
@@ -189,6 +197,9 @@ impl JobBuilder {
         if let Some(minutes) = self.timeout_minutes {
             map.insert("timeout-minutes".to_string(), Value::Number(minutes.into()));
         }
+        if let Some(concurrency) = self.concurrency {
+            map.insert("concurrency".to_string(), concurrency);
+        }
         if !self.env.is_empty() {
             let mut env = Map::new();
             for (key, value) in self.env {
@@ -226,7 +237,7 @@ pub fn call_workflow(uses: impl Into<String>) -> CallJobBuilder {
 
 /// A reusable-workflow caller job under construction. Field order on
 /// [`CallJobBuilder::build`] follows GitHub's conventional layout: `name`,
-/// `needs`, `if`, `uses`, `with`, `secrets`, `strategy`.
+/// `needs`, `if`, `uses`, `with`, `secrets`, `strategy`, `concurrency`.
 #[derive(Debug, Clone)]
 pub struct CallJobBuilder {
     name: Option<String>,
@@ -236,6 +247,7 @@ pub struct CallJobBuilder {
     with: Vec<(String, Value)>,
     secrets: Vec<(String, Value)>,
     strategy: Option<Value>,
+    concurrency: Option<Value>,
 }
 
 impl CallJobBuilder {
@@ -248,6 +260,7 @@ impl CallJobBuilder {
             with: Vec::new(),
             secrets: Vec::new(),
             strategy: None,
+            concurrency: None,
         }
     }
 
@@ -287,6 +300,13 @@ impl CallJobBuilder {
         self
     }
 
+    /// Sets `concurrency:` — a group string or an object with `group` and
+    /// `cancel-in-progress`.
+    pub fn concurrency(mut self, concurrency: impl Into<Value>) -> CallJobBuilder {
+        self.concurrency = Some(concurrency.into());
+        self
+    }
+
     /// Finishes the job. Its outputs are never declared, so
     /// [`JobRef::output`] accepts any name for the returned reference,
     /// matching the TypeScript SDK's reusable-workflow calls.
@@ -323,6 +343,9 @@ impl CallJobBuilder {
         }
         if let Some(strategy) = self.strategy {
             map.insert("strategy".to_string(), strategy);
+        }
+        if let Some(concurrency) = self.concurrency {
+            map.insert("concurrency".to_string(), concurrency);
         }
         Job {
             value: Value::Object(map),

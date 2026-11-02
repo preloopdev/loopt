@@ -108,6 +108,19 @@ func TestMemberAccessAndStar(t *testing.T) {
 	}
 }
 
+func TestMatrixContext(t *testing.T) {
+	matrix := Matrix().Field("os")
+	if got, want := matrix.String(), "${{ matrix.os }}"; got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
+	}
+	if got, want := matrix.Bare(), "matrix.os"; got != want {
+		t.Fatalf("Bare() = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(matrix.Expr().Contexts(), ","), "matrix"; got != want {
+		t.Fatalf("Contexts() = %q, want %q", got, want)
+	}
+}
+
 func TestContextsRenderAliasesAndTrackRoots(t *testing.T) {
 	tests := []struct {
 		name     string

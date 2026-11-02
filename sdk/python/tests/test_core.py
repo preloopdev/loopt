@@ -125,6 +125,26 @@ class JobTests(unittest.TestCase):
             [step["id"] for step in value.value["steps"]], ["build", "test"]
         )
 
+    def test_concurrency_sits_between_timeout_minutes_and_env(self) -> None:
+        value = (
+            job()
+            .runs_on("ubuntu-latest")
+            .timeout_minutes(15)
+            .concurrency(
+                {"group": "ci-${{ github.ref }}", "cancel-in-progress": True}
+            )
+            .env("CI", "true")
+            .build()
+        )
+        self.assertEqual(
+            list(value.value),
+            ["runs-on", "timeout-minutes", "concurrency", "env", "steps"],
+        )
+        self.assertEqual(
+            value.value["concurrency"],
+            {"group": "ci-${{ github.ref }}", "cancel-in-progress": True},
+        )
+
     def test_needs_is_a_string_for_one_job_and_a_list_for_many(self) -> None:
         wf = workflow()
         first = wf.job("first", job().runs_on("ubuntu-latest").build())
@@ -182,6 +202,27 @@ class CallWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             value.value["secrets"], {"token": "${{ secrets.DEPLOY_TOKEN }}"}
+        )
+
+    def test_caller_concurrency_is_emitted_after_strategy(self) -> None:
+        value = (
+            call_workflow("./.github/workflows/reusable.yml")
+            .name("reuse")
+            .with_("target", "production")
+            .secrets("token", secrets.DEPLOY_TOKEN)
+            .strategy({"matrix": {"target": ["staging", "production"]}})
+            .concurrency(
+                {"group": "reuse-${{ github.ref }}", "cancel-in-progress": False}
+            )
+            .build()
+        )
+        self.assertEqual(
+            list(value.value),
+            ["name", "uses", "with", "secrets", "strategy", "concurrency"],
+        )
+        self.assertEqual(
+            value.value["concurrency"],
+            {"group": "reuse-${{ github.ref }}", "cancel-in-progress": False},
         )
 
     def test_caller_outputs_are_not_validated(self) -> None:

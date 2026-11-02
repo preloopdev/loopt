@@ -254,3 +254,9 @@ export const jobContext: JobContext = dyn(
   new Expr<unknown>("job", { contexts: ["job"] }),
   JOB_ALIASES,
 ) as unknown as JobContext;
+
+/** The `matrix` context: the user-defined axes of the current matrix
+ * combination (`${{ matrix.os }}`). Named `matrixContext` to leave `matrix`
+ * free for the `strategy.matrix` builder in `core`. No aliases — every
+ * field is user-defined. */
+export const matrixContext: DynExpr = context("matrix");

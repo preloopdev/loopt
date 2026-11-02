@@ -233,7 +233,12 @@ class Job:
 
 
 class JobBuilder:
-    """A regular job (``runs-on:``) under construction."""
+    """A regular job (``runs-on:``) under construction.
+
+    Field order on :meth:`build` follows GitHub's conventional layout:
+    ``name``, ``needs``, ``if``, ``runs-on``, ``strategy``,
+    ``timeout-minutes``, ``concurrency``, ``env``, ``outputs``, ``steps``.
+    """
 
     def __init__(self) -> None:
         self._name: str | None = None
@@ -242,6 +247,7 @@ class JobBuilder:
         self._runs_on: Any = None
         self._strategy: Any = None
         self._timeout_minutes: int | None = None
+        self._concurrency: Any = None
         self._env: list[tuple[str, Any]] = []
         self._outputs: list[tuple[str, Any]] = []
         self._steps: list[StepRef] = []
@@ -276,6 +282,11 @@ class JobBuilder:
         self._timeout_minutes = int(minutes)
         return self
 
+    def concurrency(self, concurrency: Any) -> "JobBuilder":
+        """Set ``concurrency:`` (a group string or group/cancel mapping)."""
+        self._concurrency = _to_value(concurrency)
+        return self
+
     def env(self, key: str, value: Any) -> "JobBuilder":
         """Append one ``env:`` entry, preserving call order."""
         self._env.append((str(key), _to_value(value)))
@@ -308,6 +319,8 @@ class JobBuilder:
             value["strategy"] = self._strategy
         if self._timeout_minutes is not None:
             value["timeout-minutes"] = self._timeout_minutes
+        if self._concurrency is not None:
+            value["concurrency"] = self._concurrency
         if self._env:
             value["env"] = dict(self._env)
         declared_outputs = [name for name, _ in self._outputs]
@@ -318,7 +331,12 @@ class JobBuilder:
 
 
 class CallJobBuilder:
-    """A reusable-workflow caller job (``uses:``) under construction."""
+    """A reusable-workflow caller job (``uses:``) under construction.
+
+    Field order on :meth:`build` follows GitHub's conventional layout:
+    ``name``, ``needs``, ``if``, ``uses``, ``with``, ``secrets``,
+    ``strategy``, ``concurrency``.
+    """
 
     def __init__(self, uses: str) -> None:
         self._name: str | None = None
@@ -328,6 +346,7 @@ class CallJobBuilder:
         self._with: list[tuple[str, Any]] = []
         self._secrets: list[tuple[str, Any]] = []
         self._strategy: Any = None
+        self._concurrency: Any = None
 
     def name(self, name: str) -> "CallJobBuilder":
         """Set ``name:``."""
@@ -359,6 +378,11 @@ class CallJobBuilder:
         self._strategy = _to_value(strategy)
         return self
 
+    def concurrency(self, concurrency: Any) -> "CallJobBuilder":
+        """Set ``concurrency:`` (a group string or group/cancel mapping)."""
+        self._concurrency = _to_value(concurrency)
+        return self
+
     def build(self) -> Job:
         """Finish the job."""
         value: dict[str, Any] = {}
@@ -377,6 +401,8 @@ class CallJobBuilder:
             value["secrets"] = dict(self._secrets)
         if self._strategy is not None:
             value["strategy"] = self._strategy
+        if self._concurrency is not None:
+            value["concurrency"] = self._concurrency
         return Job(value, None)
 
 

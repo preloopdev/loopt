@@ -63,17 +63,18 @@ func (j Job) Value() *om.Object {
 
 // JobBuilder constructs a regular job (`runs-on:`). Field order on Build
 // follows GitHub's conventional layout: name, needs, if, runs-on, strategy,
-// timeout-minutes, env, outputs, steps.
+// timeout-minutes, concurrency, env, outputs, steps.
 type JobBuilder struct {
-	name     *string
-	needs    []*JobRef
-	ifCond   any
-	runsOn   any
-	strategy any
-	timeout  *int64
-	env      []om.Field
-	outputs  []om.Field
-	steps    []StepRef
+	name        *string
+	needs       []*JobRef
+	ifCond      any
+	runsOn      any
+	strategy    any
+	timeout     *int64
+	concurrency any
+	env         []om.Field
+	outputs     []om.Field
+	steps       []StepRef
 }
 
 // NewJob builds a regular job.
@@ -117,6 +118,13 @@ func (b *JobBuilder) TimeoutMinutes(minutes int64) *JobBuilder {
 	return b
 }
 
+// Concurrency sets `concurrency:` (a group name, or an object with `group`
+// and `cancel-in-progress`).
+func (b *JobBuilder) Concurrency(concurrency any) *JobBuilder {
+	b.concurrency = expr.Value(concurrency)
+	return b
+}
+
 // Env appends one `env:` entry, preserving call order.
 func (b *JobBuilder) Env(key string, value any) *JobBuilder {
 	b.env = setField(b.env, key, expr.Value(value))
@@ -138,7 +146,7 @@ func (b *JobBuilder) Step(step StepRef) *JobBuilder {
 
 // Build finishes the job.
 func (b *JobBuilder) Build() Job {
-	fields := make([]om.Field, 0, 9)
+	fields := make([]om.Field, 0, 10)
 	if b.name != nil {
 		fields = append(fields, om.F("name", *b.name))
 	}
@@ -156,6 +164,9 @@ func (b *JobBuilder) Build() Job {
 	}
 	if b.timeout != nil {
 		fields = append(fields, om.F("timeout-minutes", *b.timeout))
+	}
+	if b.concurrency != nil {
+		fields = append(fields, om.F("concurrency", b.concurrency))
 	}
 	if len(b.env) > 0 {
 		fields = append(fields, om.F("env", om.New(b.env...)))
@@ -181,15 +192,16 @@ func (b *JobBuilder) Build() Job {
 
 // CallJobBuilder constructs a reusable-workflow caller job (`uses:`). Field
 // order on Build follows GitHub's conventional layout: name, needs, if,
-// uses, with, secrets, strategy.
+// uses, with, secrets, strategy, concurrency.
 type CallJobBuilder struct {
-	name     *string
-	needs    []*JobRef
-	ifCond   any
-	uses     string
-	with     []om.Field
-	secrets  []om.Field
-	strategy any
+	name        *string
+	needs       []*JobRef
+	ifCond      any
+	uses        string
+	with        []om.Field
+	secrets     []om.Field
+	strategy    any
+	concurrency any
 }
 
 // NewCallJob builds a reusable-workflow caller job.
@@ -233,10 +245,17 @@ func (b *CallJobBuilder) Strategy(strategy any) *CallJobBuilder {
 	return b
 }
 
+// Concurrency sets `concurrency:` (a group name, or an object with `group`
+// and `cancel-in-progress`).
+func (b *CallJobBuilder) Concurrency(concurrency any) *CallJobBuilder {
+	b.concurrency = expr.Value(concurrency)
+	return b
+}
+
 // Build finishes the job. Its outputs are never declared, so JobRef.Output
 // accepts any name for the returned reference.
 func (b *CallJobBuilder) Build() Job {
-	fields := make([]om.Field, 0, 7)
+	fields := make([]om.Field, 0, 8)
 	if b.name != nil {
 		fields = append(fields, om.F("name", *b.name))
 	}
@@ -255,6 +274,9 @@ func (b *CallJobBuilder) Build() Job {
 	}
 	if b.strategy != nil {
 		fields = append(fields, om.F("strategy", b.strategy))
+	}
+	if b.concurrency != nil {
+		fields = append(fields, om.F("concurrency", b.concurrency))
 	}
 	return Job{value: om.New(fields...)}
 }

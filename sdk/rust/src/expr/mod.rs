@@ -14,7 +14,9 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 
-pub use contexts::{env, github, inputs, job_context, runner, secrets, strategy, vars, Context};
+pub use contexts::{
+    env, github, inputs, job_context, matrix, runner, secrets, strategy, vars, Context,
+};
 pub(crate) use contexts::{needs_context, steps_context};
 pub use functions::{
     always, cancelled, case_of, contains, ends_with, failure, format, from_json, hash_files, join,

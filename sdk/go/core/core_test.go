@@ -174,6 +174,40 @@ func TestJobNeedsAndFieldOrder(t *testing.T) {
 	}
 }
 
+func TestJobConcurrencyIsEmittedAfterTimeoutAndBeforeEnv(t *testing.T) {
+	job := NewJob().
+		RunsOn("ubuntu-latest").
+		TimeoutMinutes(5).
+		Concurrency(om.New(
+			om.F("group", "deploy-${{ github.ref }}"),
+			om.F("cancel-in-progress", true),
+		)).
+		Env("CI", "true").
+		Step(Run("true").Build()).
+		Build()
+
+	want := `{"runs-on":"ubuntu-latest","timeout-minutes":5,"concurrency":{"group":"deploy-${{ github.ref }}","cancel-in-progress":true},"env":{"CI":"true"},"steps":[{"run":"true"}]}`
+	if got := marshal(t, job.Value()); got != want {
+		t.Fatalf("job JSON =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestCallJobConcurrencyIsEmittedAfterStrategy(t *testing.T) {
+	job := NewCallJob("./.github/workflows/reusable.yml").
+		With("target", "prod").
+		Strategy(om.New(om.F("matrix", om.New(om.F("os", []any{"ubuntu-latest"}))))).
+		Concurrency(om.New(
+			om.F("group", "deploy-${{ github.ref }}"),
+			om.F("cancel-in-progress", true),
+		)).
+		Build()
+
+	want := `{"uses":"./.github/workflows/reusable.yml","with":{"target":"prod"},"strategy":{"matrix":{"os":["ubuntu-latest"]}},"concurrency":{"group":"deploy-${{ github.ref }}","cancel-in-progress":true}}`
+	if got := marshal(t, job.Value()); got != want {
+		t.Fatalf("call job JSON =\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestWorkflowFieldOrderAndJobOrder(t *testing.T) {
 	workflow := NewWorkflow().
 		Name("CI").

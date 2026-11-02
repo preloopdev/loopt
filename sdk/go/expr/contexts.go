@@ -188,6 +188,13 @@ func Strategy() Context {
 	return mustContext("strategy", strategyAliases)
 }
 
+// Matrix returns the `matrix` context: the current matrix job's axis
+// values. Axes are user-defined, so it has no alias table; navigate it with
+// Field or At, e.g. Matrix().Field("os") renders `matrix.os`.
+func Matrix() Context {
+	return mustContext("matrix", nil)
+}
+
 // Job returns the `job` context: information about the currently running
 // job. The name leaves `core.NewJob` free for the job builder constructor.
 func Job() Context {

@@ -84,6 +84,7 @@ fn job_builds_ordered_fields_and_declares_outputs() {
         .name("Build")
         .runs_on("ubuntu-latest")
         .timeout_minutes(10)
+        .concurrency("build-${{ github.ref }}")
         .env("CI", "true")
         .output("sha", "${{ steps.checkout.outputs.sha }}")
         .step(uses("actions/checkout@v6").id("checkout").build())
@@ -96,6 +97,7 @@ fn job_builds_ordered_fields_and_declares_outputs() {
             "name",
             "runs-on",
             "timeout-minutes",
+            "concurrency",
             "env",
             "outputs",
             "steps"
@@ -160,6 +162,7 @@ fn call_workflow_job_declares_no_restricted_outputs() {
         call_workflow("./.github/workflows/reusable.yml")
             .with("flag", true)
             .secrets("token", "${{ secrets.TOKEN }}")
+            .concurrency("call-${{ github.ref }}")
             .build(),
     );
     let document = wf.build();
@@ -170,6 +173,7 @@ fn call_workflow_job_declares_no_restricted_outputs() {
             "uses": "./.github/workflows/reusable.yml",
             "with": {"flag": true},
             "secrets": {"token": "${{ secrets.TOKEN }}"},
+            "concurrency": "call-${{ github.ref }}",
         })
     );
     // Reusable-workflow calls never restrict output names.

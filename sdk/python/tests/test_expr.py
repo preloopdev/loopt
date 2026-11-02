@@ -27,6 +27,7 @@ from loopt_sdk.expr import (
     le,
     lit,
     lt,
+    matrix,
     ne,
     needs,
     not_,
@@ -208,6 +209,13 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(expression.bare(), "secrets.GITHUB_TOKEN")
         self.assertEqual(expression.contexts, frozenset({"secrets"}))
 
+    def test_matrix_axis_navigation(self) -> None:
+        expression = matrix.os
+        self.assertEqual(expression.bare(), "matrix.os")
+        self.assertEqual(str(expression), "${{ matrix.os }}")
+        self.assertEqual(matrix["os"].bare(), "matrix['os']")
+        self.assertEqual(matrix.os.contexts, frozenset({"matrix"}))
+
     def test_item_navigation(self) -> None:
         self.assertEqual(github["event"].bare(), "github['event']")
         self.assertEqual(
@@ -237,6 +245,7 @@ class ContextTests(unittest.TestCase):
             (inputs, "inputs"),
             (runner, "runner"),
             (strategy, "strategy"),
+            (matrix, "matrix"),
             (needs, "needs"),
             (steps, "steps"),
             (job_context, "job"),

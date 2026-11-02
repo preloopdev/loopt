@@ -259,6 +259,13 @@ pub fn strategy() -> Context {
     Context::with_aliases("strategy", STRATEGY_ALIASES)
 }
 
+/// The `matrix` context: the user-defined axes of the current matrix
+/// combination (`${{ matrix.os }}`). No aliases — every field is
+/// user-defined in `strategy.matrix`.
+pub fn matrix() -> Context {
+    Context::new("matrix").expect("\"matrix\" is a valid context name")
+}
+
 /// The `job` context, named `job_context` to leave `job` free for the job
 /// builder constructor in [`crate::core`].
 pub fn job_context() -> Context {

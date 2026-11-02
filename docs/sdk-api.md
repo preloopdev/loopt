@@ -32,6 +32,8 @@ example).
 | Emit | `emit(workflow)` / `printWorkflow` | `emit.Print(wf)` | `print_workflow(wf)` | `emit::print(&wf)` |
 | Ordered object (Go only) | — | `om.New(om.F("k", v), …)` | dicts are ordered | `serde_json` preserve_order |
 | Expression contexts | `github.event.pull_request.title`, `secrets.TOKEN`, `env.X` | `expr.Github().Field("event").Field("pull_request")…`, `expr.Secrets().Field("TOKEN")` | `github.event.pull_request.title`, `secrets.TOKEN` | `expr::github().field("event")…`, `expr::secrets().field("TOKEN")` |
+| `matrix` context | `matrixContext.os` | `expr.Matrix().Field("os")` | `matrix.os` | `expr::matrix().field("os")` |
+| `concurrency` | `concurrency:` in job/workflow def | `.Concurrency(v)` on job/workflow builders | `.concurrency(v)` | `.concurrency(v)` |
 | Literal | `lit("x")`, `operand(v)` | `expr.Lit(v)`, `expr.Operand(v)` | `lit(v)`, `operand(v)` | `expr::lit(v)`, `expr::operand(v)` |
 | Operators | `eq(a,b) ne lt lte gt gte and or not at star` | `expr.Eq Ne Lt Le Gt Ge And Or Not At Star` | `eq ne lt le gt ge and_ or_ not_ at star` | `expr::eq ne lt le gt ge and or not at star` |
 | Functions | `contains startsWith endsWith format join toJSON fromJSON hashFiles caseOf` | `expr.Contains StartsWith EndsWith Format Join ToJSON FromJSON HashFiles Case` | `contains starts_with ends_with format join to_json from_json hash_files case_of` | `expr::contains starts_with …` (snake_case) |
