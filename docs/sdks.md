@@ -18,6 +18,10 @@ projects resolve the SDK by relative path, build offline, and always match
 the binary that produced them. Registry installs are an opt-in alternative,
 never a requirement.
 
+**"What do I call?"** — [docs/sdk-api.md](sdk-api.md) maps every concept
+(step/job/workflow, contexts, operators, refs) to the exact function in
+each language.
+
 `scripts/publish-sdks.sh` publishes the registry SDKs (npm + crates.io);
 `scripts/publish-crates.sh` publishes `loopt-sdk` together with the shared
 `preloop-gha-*` crates.
