@@ -291,6 +291,19 @@ extend `id`, `parse`, `source_extensions`, `detect_entrypoint`, `emit`, and
 request/response protocol as an external plugin, which makes it useful as a
 reference while implementing one.
 
+### Rust SDK
+
+`sdk/rust` is a `loopt-sdk` crate mirroring `sdk/typescript`: typed `${{ }}`
+expressions (literals, operators, built-in functions, and dynamically
+navigable contexts like `github`/`env`/`secrets`) plus `run`/`uses`/`job`/
+`workflow` constructors that assemble a workflow as an ordered
+`serde_json::Value`, with `JobRef`/`StepRef` typed references to
+`needs.<id>.outputs.<name>` and `steps.<id>.outputs.<name>`. `loopt import
+--language rust` vendors it verbatim into every generated project's
+`.loopt/sdk/rust`, so `<project>/Cargo.toml` depends on it with a plain
+relative path and the generated `main.rs` prints through
+`loopt_sdk::emit::print` -- no publish step, no version to keep in sync.
+
 ## Review
 
 ```sh

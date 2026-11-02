@@ -2,13 +2,13 @@
 //! API, emit native per-language source, and record the mapping in
 //! `.loopt/manifest.json`. Never modifies the original YAML.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use preloop_gha_authoring::WorkflowDocument;
 
-use crate::languages::{GeneratedSource, Language};
+use crate::languages::{GeneratedFile, GeneratedSource, Language};
 use crate::manifest::{self, DocumentKind, Manifest, ManifestEntry};
 use crate::paths;
 use crate::plugin::PluginSpec;
@@ -51,7 +51,7 @@ pub fn run(root: &Path, options: ImportOptions) -> Result<()> {
     // failure partway through never leaves some sources written and others
     // not.
     let mut planned: Vec<Planned> = Vec::new();
-    let mut seen_destinations: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut seen_destinations: BTreeMap<PathBuf, String> = BTreeMap::new();
 
     for input in &yaml_inputs {
         let yaml_path = &input.path;
@@ -86,16 +86,33 @@ pub fn run(root: &Path, options: ImportOptions) -> Result<()> {
         }
         let original_fingerprint = read_fingerprint(root, &generated)?;
         for file in &generated.files {
-            paths::require_under(root, SOURCE_DIR, &file.path)
-                .with_context(|| format!("{}: unsafe generated path", file.path.display()))?;
+            let under_source = paths::require_under(root, SOURCE_DIR, &file.path).is_ok();
+            let under_sdk = paths::require_under(root, paths::SDK_DIR, &file.path).is_ok();
+            if !under_source && !under_sdk {
+                bail!(
+                    "{}: unsafe generated path {} (must stay under {} or {})",
+                    yaml_path.display(),
+                    file.path.display(),
+                    SOURCE_DIR,
+                    paths::SDK_DIR
+                );
+            }
             paths::resolve_within(root, &file.path)
                 .with_context(|| format!("{}: unsafe generated path", file.path.display()))?;
-            if !seen_destinations.insert(file.path.clone()) {
-                bail!(
-                    "{}: duplicate authoring source destination {}",
+            match seen_destinations.get(&file.path) {
+                // A vendored shared-SDK file (see `paths::SDK_DIR`) is
+                // identical, byte-for-byte, across every document of its
+                // language, so a repeat of one already seen in this run is
+                // expected, not a conflict.
+                Some(existing_content) if existing_content == &file.content => {}
+                Some(_) => bail!(
+                    "{}: duplicate authoring source destination {} with different content",
                     yaml_path.display(),
                     file.path.display()
-                );
+                ),
+                None => {
+                    seen_destinations.insert(file.path.clone(), file.content.clone());
+                }
             }
             if manifest
                 .entries
@@ -150,9 +167,7 @@ pub fn run(root: &Path, options: ImportOptions) -> Result<()> {
         }
 
         let fingerprint = manifest::fingerprint_files(
-            generated
-                .files
-                .iter()
+            document_specific_files(&generated.files)
                 .map(|file| (file.path.as_path(), file.content.as_str())),
         );
 
@@ -246,12 +261,27 @@ fn resolve_language(
     }
 }
 
+/// The files of `generated` specific to one document: every file except a
+/// vendored shared-SDK file under `paths::SDK_DIR` (identical across every
+/// document of its language, so it is irrelevant to whether *this*
+/// document's own source was hand-edited -- fingerprinting it would wrongly
+/// treat another document's already-vendored copy as evidence this brand
+/// new document was already generated, or mark every sibling document's
+/// source "edited" the moment the vendored copy itself changes between
+/// `loopt` versions).
+fn document_specific_files(files: &[GeneratedFile]) -> impl Iterator<Item = &GeneratedFile> {
+    files
+        .iter()
+        .filter(|file| !file.path.starts_with(paths::SDK_DIR))
+}
+
 /// SHA-256 fingerprint of whatever currently exists on disk at `generated`'s
-/// file paths, or `None` if none of them exist yet (a first-time import).
+/// document-specific file paths, or `None` if none of them exist yet (a
+/// first-time import).
 fn read_fingerprint(root: &Path, generated: &GeneratedSource) -> Result<Option<String>> {
     let mut pairs: Vec<(PathBuf, String)> = Vec::new();
     let mut any_exists = false;
-    for file in &generated.files {
+    for file in document_specific_files(&generated.files) {
         let dest = root.join(&file.path);
         if dest.exists() && !dest.is_file() {
             bail!(

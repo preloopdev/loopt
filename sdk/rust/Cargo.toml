@@ -1,0 +1,13 @@
+[package]
+name = "loopt-sdk"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rust authoring SDK for GitHub Actions workflows, mirroring sdk/typescript"
+repository = "https://github.com/preloopdev/loopt"
+keywords = ["github-actions", "ci", "workflow", "sdk"]
+categories = ["development-tools"]
+publish = false
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }

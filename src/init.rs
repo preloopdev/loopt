@@ -208,11 +208,18 @@ pub fn run(root: &Path, options: InitOptions) -> Result<()> {
     let stem = PathBuf::from(SOURCE_DIR).join(&options.name);
     let generated = language.emit(&starter(&options.name, template, root), &stem)?;
     for file in &generated.files {
-        paths::require_under(root, SOURCE_DIR, &file.path)
-            .with_context(|| format!("{}: unsafe generated path", file.path.display()))?;
+        let under_source = paths::require_under(root, SOURCE_DIR, &file.path).is_ok();
+        let under_sdk = paths::require_under(root, paths::SDK_DIR, &file.path).is_ok();
+        if !under_source && !under_sdk {
+            bail!("{}: unsafe generated path", file.path.display());
+        }
         paths::resolve_within(root, &file.path)
             .with_context(|| format!("{}: unsafe generated path", file.path.display()))?;
-        if root.join(&file.path).exists() {
+        // A vendored shared-SDK file (see `paths::SDK_DIR`) is identical,
+        // byte-for-byte, across every project of its language, so it may
+        // already exist from an earlier `init`/`import`; only a
+        // project-specific file under `.loopt/workflows` must be new.
+        if under_source && root.join(&file.path).exists() {
             bail!(
                 "{} already exists; pick another --name",
                 file.path.display()

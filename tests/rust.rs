@@ -1,7 +1,8 @@
 //! Integration tests for the Rust language integration
 //! (`src/languages/rust.rs`): nested objects/arrays, string escaping,
-//! number formatting, and the generated `<stem>/Cargo.toml` /
-//! `<stem>/main.rs` / `cargo run` command wiring.
+//! number formatting, the vendored `loopt-sdk` crate emitted alongside every
+//! project, and the generated `<stem>/Cargo.toml` / `<stem>/main.rs` /
+//! `cargo run` command wiring.
 //!
 //! These tests inspect the generated Rust/TOML source as text and the
 //! structure of `GeneratedSource`/`CommandSpec`; they do not shell out to
@@ -32,7 +33,20 @@ fn entrypoint_and_manifest_paths_are_project_relative_under_stem() {
     let paths: Vec<&PathBuf> = source.files.iter().map(|f| &f.path).collect();
     assert!(paths.contains(&&stem.join("main.rs")));
     assert!(paths.contains(&&stem.join("Cargo.toml")));
-    assert_eq!(source.files.len(), 2);
+
+    // The vendored `loopt-sdk` crate the project's `Cargo.toml` depends on
+    // (see the next test) is written once under the fixed, project-
+    // independent `.loopt/sdk/rust`, not duplicated per project.
+    assert!(paths.contains(&&PathBuf::from(".loopt/sdk/rust/Cargo.toml")));
+    assert!(paths.contains(&&PathBuf::from(".loopt/sdk/rust/src/lib.rs")));
+    assert!(paths.contains(&&PathBuf::from(".loopt/sdk/rust/src/core/workflow.rs")));
+    assert!(paths
+        .iter()
+        .all(|path| path.starts_with(".loopt/workflows") || path.starts_with(".loopt/sdk")));
+
+    // 2 project files (Cargo.toml, main.rs) + the vendored loopt-sdk crate's
+    // own files; update this count alongside `rust::SDK_FILES`.
+    assert_eq!(source.files.len(), 2 + 13);
 }
 
 #[test]
@@ -69,6 +83,13 @@ fn manifest_is_a_standalone_workspace_with_matching_bin_and_required_features() 
     assert!(manifest.contains("preserve_order"), "manifest:\n{manifest}");
     assert!(
         manifest.contains("arbitrary_precision"),
+        "manifest:\n{manifest}"
+    );
+
+    // Depends on the vendored loopt-sdk crate two levels up
+    // (.loopt/workflows/deploy/../../sdk/rust -> .loopt/sdk/rust).
+    assert!(
+        manifest.contains("loopt-sdk = { path = \"../../sdk/rust\" }"),
         "manifest:\n{manifest}"
     );
 }
@@ -125,7 +146,10 @@ fn nested_objects_and_arrays_preserve_structure_and_key_order() {
     assert!(main_rs.contains("fn arr(items: Vec<Value>) -> Value {"));
     assert!(main_rs.contains("fn num(repr: &str) -> Value {"));
     assert!(main_rs.contains("fn main() {"));
-    assert!(main_rs.contains("println!(\"{rendered}\");"));
+    // main() routes through the vendored loopt-sdk crate's emit::print,
+    // not a manual serialize+println!, so the dependency is real.
+    assert!(main_rs.contains("use loopt_sdk::emit;"));
+    assert!(main_rs.contains("emit::print(&workflow);"));
 
     // Top-level key order preserved: "zebra" authored before "apple".
     let zebra_pos = main_rs.find("\"zebra\"").expect("zebra key present");

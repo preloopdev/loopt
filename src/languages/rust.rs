@@ -4,14 +4,25 @@
 //! standalone Cargo project (`<stem>/Cargo.toml` + `<stem>/main.rs`) whose
 //! `main.rs` *constructs* the same value as native `serde_json::Value` data
 //! (`obj`/`arr`/`num` calls, `Value::String`, `Value::Bool`, `Value::Null`)
-//! and prints it back out as one JSON object on stdout. Nothing is embedded
-//! as an opaque JSON/YAML string: every scalar, key and nesting level is a
-//! real Rust expression that a user can edit, loop over, or wrap in helper
-//! functions. The generated project is a self-contained Cargo workspace
-//! (`[workspace]` with no members but itself) so it never gets swallowed by
-//! an ancestor workspace, and it is built/run with an explicit
-//! `--target-dir` under `.loopt/.cache` so build artifacts never land inside
-//! `.loopt/workflows`.
+//! and prints it through the vendored `loopt-sdk` crate's `emit::print`.
+//! Nothing is embedded as an opaque JSON/YAML string: every scalar, key and
+//! nesting level is a real Rust expression that a user can edit, loop over,
+//! or wrap in helper functions. The generated project is a self-contained
+//! Cargo workspace (`[workspace]` with no members but itself) so it never
+//! gets swallowed by an ancestor workspace, and it is built/run with an
+//! explicit `--target-dir` under `.loopt/.cache` so build artifacts never
+//! land inside `.loopt/workflows`.
+//!
+//! `emit` also (re)writes a vendored copy of the `loopt-sdk` crate under the
+//! fixed, project-independent `.loopt/sdk/rust`, embedded in this binary at
+//! compile time (`SDK_FILES`, via `include_str!` from the repository's own
+//! `sdk/rust`) so every generated project's `Cargo.toml` can depend on it
+//! with a plain relative path (`../../sdk/rust`) instead of duplicating the
+//! SDK per project or requiring it to be published. Every rust-language
+//! document's `GeneratedSource` repeats the same `.loopt/sdk/rust/*` files
+//! verbatim; `import`/`init` tolerate that specific kind of repeat (see
+//! `paths::SDK_DIR`) since the vendored copy is identical byte-for-byte no
+//! matter which document triggered writing it.
 
 use std::path::{Path, PathBuf};
 
@@ -22,9 +33,72 @@ use crate::languages::{CommandSpec, GeneratedFile, GeneratedSource};
 
 const INDENT: &str = "    ";
 
+/// Project-relative directory the vendored `loopt-sdk` crate is written to,
+/// shared by every generated Rust workflow project in the repository.
+const SDK_VENDOR_DIR: &str = ".loopt/sdk/rust";
+
+/// The vendored `loopt-sdk` crate's sources, embedded at compile time from
+/// `sdk/rust` (built and tested as a normal workspace member -- see the
+/// repository root `Cargo.toml`). Paths are relative to `SDK_VENDOR_DIR`.
+const SDK_FILES: &[(&str, &str)] = &[
+    ("Cargo.toml", include_str!("../../sdk/rust/Cargo.toml")),
+    ("src/lib.rs", include_str!("../../sdk/rust/src/lib.rs")),
+    ("src/error.rs", include_str!("../../sdk/rust/src/error.rs")),
+    ("src/emit.rs", include_str!("../../sdk/rust/src/emit.rs")),
+    (
+        "src/expr/mod.rs",
+        include_str!("../../sdk/rust/src/expr/mod.rs"),
+    ),
+    (
+        "src/expr/contexts.rs",
+        include_str!("../../sdk/rust/src/expr/contexts.rs"),
+    ),
+    (
+        "src/expr/functions.rs",
+        include_str!("../../sdk/rust/src/expr/functions.rs"),
+    ),
+    (
+        "src/expr/literal.rs",
+        include_str!("../../sdk/rust/src/expr/literal.rs"),
+    ),
+    (
+        "src/expr/operators.rs",
+        include_str!("../../sdk/rust/src/expr/operators.rs"),
+    ),
+    (
+        "src/core/mod.rs",
+        include_str!("../../sdk/rust/src/core/mod.rs"),
+    ),
+    (
+        "src/core/step.rs",
+        include_str!("../../sdk/rust/src/core/step.rs"),
+    ),
+    (
+        "src/core/job.rs",
+        include_str!("../../sdk/rust/src/core/job.rs"),
+    ),
+    (
+        "src/core/workflow.rs",
+        include_str!("../../sdk/rust/src/core/workflow.rs"),
+    ),
+];
+
+/// The vendored `loopt-sdk` sources as `GeneratedFile`s rooted at
+/// `SDK_VENDOR_DIR`, appended to every emitted Rust `GeneratedSource`.
+fn sdk_files() -> Vec<GeneratedFile> {
+    SDK_FILES
+        .iter()
+        .map(|(relative, content)| GeneratedFile {
+            path: Path::new(SDK_VENDOR_DIR).join(relative),
+            content: (*content).to_string(),
+        })
+        .collect()
+}
+
 /// Build the standalone Rust/Cargo source for `workflow`, returning a
 /// `GeneratedSource` rooted at `<stem>/main.rs` with a sibling
-/// `<stem>/Cargo.toml`.
+/// `<stem>/Cargo.toml`, plus the vendored `loopt-sdk` crate under
+/// `.loopt/sdk/rust` that `<stem>/Cargo.toml` depends on.
 pub fn emit(workflow: &Value, stem: &Path) -> Result<GeneratedSource> {
     let crate_name = safe_crate_name(stem);
 
@@ -34,18 +108,21 @@ pub fn emit(workflow: &Value, stem: &Path) -> Result<GeneratedSource> {
     let main_path = stem.join("main.rs");
     let manifest_path = stem.join("Cargo.toml");
 
+    let mut files = vec![
+        GeneratedFile {
+            path: manifest_path,
+            content: render_manifest(&crate_name),
+        },
+        GeneratedFile {
+            path: main_path.clone(),
+            content: render_main(&literal),
+        },
+    ];
+    files.extend(sdk_files());
+
     Ok(GeneratedSource {
-        entrypoint: main_path.clone(),
-        files: vec![
-            GeneratedFile {
-                path: manifest_path,
-                content: render_manifest(&crate_name),
-            },
-            GeneratedFile {
-                path: main_path,
-                content: render_main(&literal),
-            },
-        ],
+        entrypoint: main_path,
+        files,
     })
 }
 
@@ -152,7 +229,8 @@ fn render_manifest(crate_name: &str) -> String {
          path = \"main.rs\"\n\
          \n\
          [dependencies]\n\
-         serde_json = {{ version = \"1\", features = [\"preserve_order\", \"arbitrary_precision\"] }}\n"
+         serde_json = {{ version = \"1\", features = [\"preserve_order\", \"arbitrary_precision\"] }}\n\
+         loopt-sdk = {{ path = \"../../sdk/rust\" }}\n"
     )
 }
 
@@ -176,6 +254,7 @@ const MODULE_HEADER: &str = "// Generated by `loopt import`.\n\
 // imports, helper functions, loops or conditionals as needed -- then run\n\
 // `loopt gen` to regenerate the workflow YAML from this source.\n\
 #![allow(dead_code)]\n\
+use loopt_sdk::emit;\n\
 use serde_json::{Map, Number, Value};\n\
 use std::str::FromStr;\n\
 \n\
@@ -205,8 +284,7 @@ fn num(repr: &str) -> Value {\n\
 
 const MAIN_FN: &str = "fn main() {\n\
     let workflow = build_workflow();\n\
-    let rendered = serde_json::to_string(&workflow).expect(\"serialize workflow to JSON\");\n\
-    println!(\"{rendered}\");\n\
+    emit::print(&workflow);\n\
 }\n";
 
 /// Recursively render `value` as a Rust expression built from the `obj`/

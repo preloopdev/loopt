@@ -257,6 +257,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "loopt-sdk"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "loopt-sdkgen"
 version = "0.1.0"
 dependencies = [

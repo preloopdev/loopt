@@ -16,7 +16,14 @@ pub mod rust;
 pub mod typescript;
 
 /// A single file produced by a language's `emit`. `path` is project-relative
-/// and must stay under `.loopt/workflows`.
+/// and must stay under `.loopt/workflows` (each caller's own `SOURCE_DIR`),
+/// with one carve-out: a vendored, cross-project shared SDK a backend writes
+/// once and reuses across every project of that language (currently the
+/// Rust backend's `.loopt/sdk/rust`, see `src/languages/rust.rs`) may
+/// instead stay under `.loopt/sdk` (`paths::SDK_DIR`). `import`/`init`
+/// tolerate an identical repeat of such a file across multiple documents in
+/// one run; that is the only case where two documents' `files` may share a
+/// `path`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedFile {
     pub path: PathBuf,
