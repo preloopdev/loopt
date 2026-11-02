@@ -4,7 +4,6 @@ const workflow = {
   name: "release",
   on: {
     push: { tags: ["v*"] },
-    workflow_dispatch: {},
   },
   permissions: {},
   concurrency: {
