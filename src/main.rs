@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 
 use loopt::plugin::PluginSpec;
 use loopt::shellcheck::{ShellcheckMode, ShellcheckOptions};
-use loopt::{actions, gen, import, init, lint, plugin, secrets};
+use loopt::{actions, gen, import, init, lint, lock, plugin, secrets};
 use preloop_gha_sec::Persona;
 
 #[derive(Parser)]
@@ -37,6 +37,12 @@ enum Command {
     /// Synchronize names-only secret inventory from GitHub.
     Secrets {
         /// Subcommand and its options.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Generate or verify .github/workflows/actions.lock dependency pins.
+    Lock {
+        /// Options: --verify, --verify-local, --json, optional workflow paths.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -135,6 +141,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Actions { args } => actions::run(&resolve_root(cli.root)?, &args),
         Command::Secrets { args } => secrets::run(&resolve_root(cli.root)?, &args),
+        Command::Lock { args } => lock::run(&resolve_root(cli.root)?, &args),
         Command::Plugin { language } => {
             let root = resolve_root(cli.root)?;
             plugin::serve_builtin_once(&language, &root)

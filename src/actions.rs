@@ -6,19 +6,18 @@
 //! metadata in a deterministic lock file, and emits ordinary TypeScript that
 //! calls the existing SDK `uses` helper.
 
+use crate::gh;
+use crate::paths;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use preloop_gha_authoring::WorkflowDocument;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
-
-use crate::paths;
 
 const LOCK_PATH: &str = ".loopt/actions.lock";
 const ACTIONS_DIR: &str = ".loopt/actions";
@@ -910,8 +909,8 @@ fn validate_lock_entry(entry: &LockEntry) -> Result<()> {
     validate_binding_name(&entry.name)?;
     let source = parse_source(&entry.source)?;
     let _ = source;
-    validate_ref(&entry.requested_ref)?;
-    validate_sha(&entry.sha)?;
+    gh::validate_ref(&entry.requested_ref)?;
+    gh::validate_sha(&entry.sha)?;
     validate_sdk_import(&entry.sdk_import)?;
     if entry.metadata != "action.yml" && entry.metadata != "action.yaml" {
         bail!(
@@ -1038,7 +1037,8 @@ fn parse_action_spec(spec: &str) -> Result<(ActionSource, String)> {
         .rsplit_once('@')
         .context("action spec must be OWNER/REPO[/SUBPATH]@REF")?;
     let source = parse_source(source)?;
-    validate_ref(requested_ref)?;
+    gh::validate_ref(requested_ref)?;
+
     Ok((source, requested_ref.to_string()))
 }
 
@@ -1074,33 +1074,6 @@ fn validate_repo_component(value: &str, label: &str) -> Result<()> {
         })
     {
         bail!("invalid GitHub {label} component {value:?}");
-    }
-    Ok(())
-}
-
-fn validate_ref(value: &str) -> Result<()> {
-    if value.is_empty()
-        || value.trim() != value
-        || value.chars().any(|character| {
-            character.is_ascii_control()
-                || character.is_whitespace()
-                || matches!(character, '?' | '#' | '%' | '\\')
-        })
-        || value.starts_with('/')
-        || value.ends_with('/')
-        || value.contains("//")
-    {
-        bail!("invalid GitHub ref {value:?}");
-    }
-    Ok(())
-}
-
-fn validate_sha(value: &str) -> Result<()> {
-    if value.len() != 40
-        || !value.chars().all(|character| character.is_ascii_hexdigit())
-        || value != value.to_ascii_lowercase()
-    {
-        bail!("expected a full lowercase 40-character commit SHA, got {value:?}");
     }
     Ok(())
 }
@@ -1160,29 +1133,36 @@ fn looks_like_action_spec(value: &str) -> bool {
 }
 
 fn fetch_action(root: &Path, source: &ActionSource, requested_ref: &str) -> Result<ResolvedAction> {
-    let commit_endpoint = format!(
-        "repos/{}/{}/commits/{}",
-        source.owner,
-        source.repo,
-        encode_ref(requested_ref)
-    );
-    let commit_response = gh_api(root, &commit_endpoint, false).with_context(|| {
-        format!(
-            "resolve {}@{} to a commit",
-            source.canonical(),
-            requested_ref
-        )
-    })?;
-    let sha = parse_commit_sha(&commit_response)?;
+    let sha = gh::resolve_commit(root, &source.owner, &source.repo, requested_ref).with_context(
+        || {
+            format!(
+                "resolve {}@{} to a full commit SHA",
+                source.canonical(),
+                requested_ref
+            )
+        },
+    )?;
+    let metadata_path = source
+        .subpath
+        .iter()
+        .fold(String::new(), |mut path, component| {
+            if !path.is_empty() {
+                path.push('/');
+            }
+            path.push_str(component);
+            path
+        });
 
     let mut failures = Vec::new();
     for metadata_file in ["action.yml", "action.yaml"] {
-        let endpoint = contents_endpoint(source, metadata_file, &sha);
-        match gh_api(root, &endpoint, true).and_then(|bytes| {
-            let bytes = decode_contents_response(&bytes)?;
-            let metadata = parse_action_metadata(&bytes, metadata_file)?;
-            Ok(metadata)
-        }) {
+        let path = if metadata_path.is_empty() {
+            metadata_file.to_string()
+        } else {
+            format!("{metadata_path}/{metadata_file}")
+        };
+        match gh::fetch_file(root, &source.owner, &source.repo, &path, &sha)
+            .and_then(|bytes| parse_action_metadata(&bytes, metadata_file))
+        {
             Ok(metadata) => {
                 return Ok(ResolvedAction { sha, metadata });
             }
@@ -1195,152 +1175,6 @@ fn fetch_action(root: &Path, source: &ActionSource, requested_ref: &str) -> Resu
         sha,
         failures.join("\n- ")
     )
-}
-
-fn gh_api(root: &Path, endpoint: &str, raw: bool) -> Result<Vec<u8>> {
-    let gh = std::env::var_os("LOOPT_GH").unwrap_or_else(|| "gh".into());
-    let mut command = Command::new(gh);
-    command.current_dir(root).arg("api").arg(endpoint);
-    if raw {
-        command.args(["--header", "Accept: application/vnd.github.raw+json"]);
-    }
-    let output = command.output().with_context(|| {
-        "run `gh api`; install GitHub CLI and authenticate with `gh auth login`"
-    })?;
-    if !output.status.success() {
-        bail!(
-            "gh api request failed with {}; authenticate with `gh auth login` and check repository/ref",
-            output.status
-        );
-    }
-    Ok(output.stdout)
-}
-
-fn parse_commit_sha(bytes: &[u8]) -> Result<String> {
-    let text =
-        String::from_utf8(bytes.to_vec()).context("gh returned non-UTF-8 commit metadata")?;
-    let trimmed = text.trim();
-    let candidate = if let Ok(value) = serde_json::from_str::<JsonValue>(trimmed) {
-        match &value {
-            JsonValue::Object(object) => object
-                .get("sha")
-                .and_then(JsonValue::as_str)
-                .context("commit response did not contain a sha")?
-                .to_string(),
-            JsonValue::String(value) => value.clone(),
-            _ => bail!("commit response did not contain a sha"),
-        }
-    } else {
-        trimmed.to_string()
-    };
-    let sha = candidate.trim().to_ascii_lowercase();
-    validate_sha(&sha).context("gh did not resolve the ref to a full commit SHA")?;
-    Ok(sha)
-}
-
-fn contents_endpoint(source: &ActionSource, metadata_file: &str, sha: &str) -> String {
-    let mut endpoint = format!("repos/{}/{}/contents", source.owner, source.repo);
-    for component in &source.subpath {
-        endpoint.push('/');
-        endpoint.push_str(&encode_path_component(component));
-    }
-    endpoint.push('/');
-    endpoint.push_str(metadata_file);
-    endpoint.push_str("?ref=");
-    endpoint.push_str(sha);
-    endpoint
-}
-
-fn encode_ref(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | '~' | '/')
-            {
-                character.to_string()
-            } else {
-                format!("%{:02X}", character as u32)
-            }
-        })
-        .collect()
-}
-
-fn encode_path_component(value: &str) -> String {
-    value
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-                (byte as char).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect()
-}
-
-fn decode_contents_response(bytes: &[u8]) -> Result<Vec<u8>> {
-    let Ok(value) = serde_json::from_slice::<JsonValue>(bytes) else {
-        return Ok(bytes.to_vec());
-    };
-    let Some(object) = value.as_object() else {
-        return Ok(bytes.to_vec());
-    };
-    if let Some(message) = object.get("message").and_then(JsonValue::as_str) {
-        bail!("GitHub API: {message}");
-    }
-    if let Some(content) = object.get("content").and_then(JsonValue::as_str) {
-        return decode_base64(content);
-    }
-    // A JSON object can itself be valid action metadata.  Preserve its JSON
-    // representation instead of treating it as a contents API envelope.
-    Ok(bytes.to_vec())
-}
-
-fn decode_base64(value: &str) -> Result<Vec<u8>> {
-    let mut output = Vec::new();
-    let mut quartet = [0u8; 4];
-    let mut count = 0usize;
-    for byte in value.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
-        quartet[count] = byte;
-        count += 1;
-        if count == 4 {
-            let a = base64_value(quartet[0])?;
-            let b = base64_value(quartet[1])?;
-            let c = if quartet[2] == b'=' {
-                0
-            } else {
-                base64_value(quartet[2])?
-            };
-            let d = if quartet[3] == b'=' {
-                0
-            } else {
-                base64_value(quartet[3])?
-            };
-            output.push((a << 2) | (b >> 4));
-            if quartet[2] != b'=' {
-                output.push((b << 4) | (c >> 2));
-            }
-            if quartet[3] != b'=' {
-                output.push((c << 6) | d);
-            }
-            count = 0;
-        }
-    }
-    if count != 0 {
-        bail!("GitHub contents response contained invalid base64");
-    }
-    Ok(output)
-}
-
-fn base64_value(byte: u8) -> Result<u8> {
-    match byte {
-        b'A'..=b'Z' => Ok(byte - b'A'),
-        b'a'..=b'z' => Ok(byte - b'a' + 26),
-        b'0'..=b'9' => Ok(byte - b'0' + 52),
-        b'+' => Ok(62),
-        b'/' => Ok(63),
-        _ => bail!("invalid base64 in GitHub contents response"),
-    }
 }
 
 fn parse_action_metadata(bytes: &[u8], metadata_file: &str) -> Result<ActionMetadata> {

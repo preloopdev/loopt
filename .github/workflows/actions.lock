@@ -1,0 +1,19 @@
+version: 'v0.0.2'
+dependencies:
+  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1':
+    ref: '3d3c42e5aac5ba805825da76410c181273ba90b1'
+    commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
+    owner_id: 44036562
+    repo_id: 197814629
+  'dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec':
+    ref: 'b725eda525362e7cf34af9a7243cac1e3f01a7ec'
+    commit: 'sha1-b725eda525362e7cf34af9a7243cac1e3f01a7ec'
+    owner_id: 1940490
+    repo_id: 260749683
+workflows:
+  '.github/workflows/ci.yml':
+    - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+    - 'dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec'
+  '.github/workflows/release.yml':
+    - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+    - 'dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec'

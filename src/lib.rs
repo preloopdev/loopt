@@ -17,6 +17,8 @@ pub mod actions;
 pub mod exec;
 /// `loopt gen`.
 pub mod gen;
+/// Shared `gh api` helpers for GitHub metadata lookups.
+pub mod gh;
 /// `loopt import`.
 pub mod import;
 /// `loopt init`.
@@ -26,6 +28,8 @@ pub mod init;
 pub mod languages;
 /// `loopt lint`: native correctness and security checks.
 pub mod lint;
+/// GitHub workflow dependency lockfile (`.github/workflows/actions.lock`).
+pub mod lock;
 /// `.loopt/manifest.json`: the durable source/output map.
 pub mod manifest;
 /// Path safety and atomic-write helpers.
