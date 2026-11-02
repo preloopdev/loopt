@@ -1,16 +1,26 @@
 # Authoring SDKs
 
-Two languages ship a real SDK — typed expression builders, context
-navigation, and workflow/job/step constructors — rather than just literal
-emitters.
+All four first-party languages ship a real SDK — typed `${{ }}` expression
+builders, context navigation, workflow/job/step constructors, and
+`JobRef`/`StepRef` typed references to `needs.<id>.outputs.<name>` and
+`steps.<id>.outputs.<name>`.
 
-| SDK | Registry | Version |
+| SDK | Registry | Source |
 |---|---|---|
-| `@preloopdev/sdk` (TypeScript) | npm | `sdk/typescript` in this repo |
-| `loopt-sdk` (Rust) | crates.io | `sdk/rust` in this repo |
+| `@preloopdev/sdk` (TypeScript) | npm | `sdk/typescript` |
+| `loopt-sdk` (Rust) | crates.io | `sdk/rust` |
+| `loopt-sdk` (Python) | PyPI (not yet published) | `sdk/python` |
+| `github.com/preloopdev/loopt/sdk/go` | Go modules via Git tags | `sdk/go` |
 
-`scripts/publish-sdks.sh` publishes both; `scripts/publish-crates.sh`
-publishes `loopt-sdk` together with the shared `preloop-gha-*` crates.
+Every SDK is also **vendored into generated projects** — the `loopt` binary
+embeds the sources and writes them under `.loopt/sdk/<lang>`, so generated
+projects resolve the SDK by relative path, build offline, and always match
+the binary that produced them. Registry installs are an opt-in alternative,
+never a requirement.
+
+`scripts/publish-sdks.sh` publishes the registry SDKs (npm + crates.io);
+`scripts/publish-crates.sh` publishes `loopt-sdk` together with the shared
+`preloop-gha-*` crates.
 
 ## TypeScript — `@preloopdev/sdk`
 
@@ -51,8 +61,31 @@ on it with a plain relative path (`../../sdk/rust`) instead of the registry —
 generated projects build offline and use the exact source the `loopt` binary
 was built from.
 
-## Python, Go, and plugins
+## Python — `loopt_sdk`
 
-Python and Go emit standalone literal programs (no runtime dependency), so
-they do not need an SDK package. Out-of-tree plugin languages likewise emit
-source that prints the workflow JSON directly.
+`sdk/python` is the `loopt_sdk` package (dist `loopt-sdk`, Python 3.10+,
+stdlib-only): `loopt_sdk.expr` (literal/operand, operators, functions, and
+attribute/item context navigation like `github.event.pull_request.title` and
+`secrets.GITHUB_TOKEN`), `loopt_sdk.core` (`run`/`uses`/`job`/
+`call_workflow`/`workflow`, `JobRef`/`StepRef`), and `loopt_sdk.emit`.
+
+Generated `<stem>.py` projects vendored under `.loopt/sdk/python` and import
+it through a small `sys.path` shim computed from `__file__` — `loopt gen`
+needs nothing but `python3`.
+
+## Go — `github.com/preloopdev/loopt/sdk/go`
+
+`sdk/go` is a Go module (Go 1.21+) with four packages: `expr` (`Expr`,
+`Context`, operators/functions, navigable contexts), `om` (insertion-ordered
+JSON object — Go's `encoding/json` would sort map keys and reorder workflow
+fields), `core` (`Run`/`Uses`, `NewJob`/`NewCallJob`/`NewWorkflow`,
+`JobRef`/`StepRef`), and `emit` (ordered one-line JSON to stdout).
+
+`loopt import --language go` generates a `<stem>/` project (`main.go` +
+`go.mod`) whose `go.mod` requires the SDK with a relative `replace`
+directive pointing at the vendored `.loopt/sdk/go` — no proxy or network.
+
+## Plugins
+
+Out-of-tree plugin languages emit source that prints the workflow JSON
+directly; they do not use an SDK.

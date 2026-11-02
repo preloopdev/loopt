@@ -1,19 +1,20 @@
 //! Behavioral tests for the Go language integration (`src/languages/go.rs`).
 //!
-//! Each test drives the real pipeline: `go::emit` builds a Go source file
-//! from a `serde_json::Value` workflow, the file is written to a scratch
-//! directory, `go::command` is used to invoke `go run` on it exactly as
-//! the CLI would, and the process's stdout is checked both as raw JSON
-//! text (to assert on byte order, independent of how this test's own
-//! JSON values are represented) and as a parsed `serde_json::Value` (to
-//! assert on content). Requires a `go` toolchain on `PATH`.
+//! Each test drives the real pipeline: `go::emit` builds a Go project and
+//! its vendored SDK from a `serde_json::Value` workflow, every generated
+//! file is written to a scratch directory, `go::command` is used to invoke
+//! `go -C <project> run .` exactly as the CLI would, and the process's
+//! stdout is checked both as raw JSON text (to assert on byte order,
+//! independent of how this test's own JSON values are represented) and as a
+//! parsed `serde_json::Value` (to assert on content). Requires a `go`
+//! toolchain on `PATH`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use loopt::languages::go;
+use loopt::languages::{go, GeneratedSource, Language};
 use serde_json::{Map, Number, Value};
 
 /// Minimal scratch-directory guard: creates a unique temp directory and
@@ -48,32 +49,47 @@ impl Drop for ScratchDir {
     }
 }
 
+fn file_content<'a>(source: &'a GeneratedSource, path: &Path) -> &'a str {
+    source
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("no generated file at {}", path.display()))
+        .content
+        .as_str()
+}
+
+/// Writes every file from `generated` under `root`, creating parents.
+fn write_project(root: &Path, generated: &GeneratedSource) {
+    for file in &generated.files {
+        let destination = root.join(&file.path);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).expect("create generated file parent dirs");
+        }
+        fs::write(&destination, &file.content).expect("write generated file");
+    }
+}
+
 /// Runs the full emit -> write -> `go run` pipeline for `workflow` and
 /// returns raw stdout text alongside the value parsed from it.
 fn run_workflow(workflow: &Value, stem: &str) -> (String, Value) {
     let scratch = ScratchDir::new(&stem.replace(['/', '.'], "_"));
 
     let generated = go::emit(workflow, Path::new(stem)).expect("emit should succeed");
-    assert_eq!(generated.files.len(), 1, "go emits exactly one source file");
-    assert_eq!(
-        generated.entrypoint, generated.files[0].path,
-        "entrypoint must match the single emitted file's path"
-    );
     assert_eq!(
         generated.entrypoint,
-        PathBuf::from(format!("{stem}.go")),
-        "entrypoint must be <stem>.go"
+        PathBuf::from(format!("{stem}/main.go")),
+        "entrypoint must be <stem>/main.go"
     );
-
-    let source_path = scratch.path().join(&generated.entrypoint);
-    if let Some(parent) = source_path.parent() {
-        fs::create_dir_all(parent).expect("create entrypoint parent dirs");
-    }
-    fs::write(&source_path, &generated.files[0].content).expect("write generated source");
+    write_project(scratch.path(), &generated);
 
     let spec = go::command(&generated.entrypoint).expect("command should succeed");
     assert_eq!(spec.program, "go");
-    assert_eq!(spec.args[0], "run");
+    assert_eq!(
+        spec.args,
+        vec!["-C", stem, "run", "."],
+        "command must run the project directory"
+    );
 
     let output = Command::new(&spec.program)
         .args(&spec.args)
@@ -83,8 +99,8 @@ fn run_workflow(workflow: &Value, stem: &str) -> (String, Value) {
 
     assert!(
         output.status.success(),
-        "go run failed:\n--- generated source ---\n{}\n--- stdout ---\n{}\n--- stderr ---\n{}",
-        generated.files[0].content,
+        "go run failed:\n--- generated main.go ---\n{}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        file_content(&generated, &generated.entrypoint),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -103,11 +119,155 @@ fn object(fields: Vec<(&str, Value)>) -> Value {
     Value::Object(map)
 }
 
+#[test]
+fn emit_writes_a_go_project_and_vendors_the_sdk() {
+    let stem = PathBuf::from(".loopt/workflows/ci");
+    let generated = go::emit(&object(vec![("name", Value::String("CI".into()))]), &stem)
+        .expect("emit should succeed");
+
+    assert_eq!(generated.entrypoint, stem.join("main.go"));
+
+    let paths: Vec<&PathBuf> = generated.files.iter().map(|file| &file.path).collect();
+    assert!(paths.contains(&&stem.join("main.go")));
+    assert!(paths.contains(&&stem.join("go.mod")));
+
+    // The SDK the project's go.mod requires is written once under the
+    // fixed, project-independent `.loopt/sdk/go`.
+    for relative in [
+        ".loopt/sdk/go/go.mod",
+        ".loopt/sdk/go/om/om.go",
+        ".loopt/sdk/go/expr/expr.go",
+        ".loopt/sdk/go/expr/contexts.go",
+        ".loopt/sdk/go/core/step.go",
+        ".loopt/sdk/go/core/job.go",
+        ".loopt/sdk/go/core/workflow.go",
+        ".loopt/sdk/go/emit/emit.go",
+    ] {
+        assert!(
+            paths.contains(&&PathBuf::from(relative)),
+            "missing vendored SDK file {relative}"
+        );
+    }
+    assert!(paths
+        .iter()
+        .all(|path| path.starts_with(".loopt/workflows") || path.starts_with(".loopt/sdk")));
+
+    // 2 project files (go.mod, main.go) + the vendored SDK module's own
+    // files; update this count alongside `go::SDK_FILES`.
+    assert_eq!(generated.files.len(), 2 + 16);
+}
+
+#[test]
+fn main_go_builds_native_values_through_the_sdk() {
+    let stem = PathBuf::from(".loopt/workflows/build");
+    let workflow = object(vec![
+        ("name", Value::String("CI".into())),
+        (
+            "jobs",
+            object(vec![(
+                "build",
+                object(vec![(
+                    "steps",
+                    Value::Array(vec![object(vec![(
+                        "run",
+                        Value::String("go test ./...".into()),
+                    )])]),
+                )]),
+            )]),
+        ),
+    ]);
+    let generated = go::emit(&workflow, &stem).expect("emit should succeed");
+    let main_go = file_content(&generated, &stem.join("main.go"));
+
+    // The project imports the SDK rather than carrying a private copy of
+    // the ordered-object helper.
+    assert!(main_go.contains("package main"));
+    assert!(main_go.contains("\"github.com/preloopdev/loopt/sdk/go/emit\""));
+    assert!(main_go.contains("\"github.com/preloopdev/loopt/sdk/go/om\""));
+    assert!(main_go.contains("func workflow() any {"));
+    assert!(main_go.contains("om.New("));
+    assert!(main_go.contains("om.F("));
+    assert!(main_go.contains("emit.Print(workflow())"));
+
+    // No inline runtime: the helper lives in the SDK now.
+    assert!(!main_go.contains("type om struct"));
+    assert!(!main_go.contains("func newOM"));
+    assert!(!main_go.contains("type omField struct"));
+    assert!(!main_go.contains("func f("));
+
+    // Values are real Go values, not an embedded JSON string.
+    assert!(main_go.contains("go test ./..."));
+    assert!(!main_go.contains("json.Unmarshal"));
+    assert!(!main_go.contains("json.NewDecoder"));
+}
+
+#[test]
+fn manifest_requires_the_vendored_sdk_with_a_relative_replace() {
+    let stem = PathBuf::from(".loopt/workflows/deploy");
+    let generated = go::emit(&object(vec![("on", Value::String("push".into()))]), &stem)
+        .expect("emit should succeed");
+    let manifest = file_content(&generated, &stem.join("go.mod"));
+
+    assert!(
+        manifest.contains("module loopt.local/workflows/deploy"),
+        "{manifest}"
+    );
+    assert!(manifest.contains("go 1.21"), "{manifest}");
+    assert!(
+        manifest.contains("require github.com/preloopdev/loopt/sdk/go v0.0.0"),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains("replace github.com/preloopdev/loopt/sdk/go => ../../sdk/go"),
+        "{manifest}"
+    );
+}
+
+#[test]
+fn nested_project_stems_get_a_correct_relative_sdk_path() {
+    let stem = PathBuf::from(".loopt/workflows/actions/deploy/ci");
+    let generated = go::emit(&object(vec![]), &stem).expect("emit should succeed");
+    let manifest = file_content(&generated, &stem.join("go.mod"));
+
+    assert!(
+        manifest.contains("replace github.com/preloopdev/loopt/sdk/go => ../../../../sdk/go"),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains("module loopt.local/workflows/ci"),
+        "{manifest}"
+    );
+}
+
+#[test]
+fn module_name_is_sanitized_from_non_identifier_stem_components() {
+    let stem = PathBuf::from(".loopt/workflows/My Workflow! 2.yml");
+    let generated = go::emit(&object(vec![]), &stem).expect("emit should succeed");
+    let manifest = file_content(&generated, &stem.join("go.mod"));
+
+    assert!(
+        manifest.contains("module loopt.local/workflows/my_workflow__2_yml"),
+        "{manifest}"
+    );
+}
+
+#[test]
+fn module_name_gets_prefixed_when_it_would_not_start_with_a_letter() {
+    let stem = PathBuf::from(".loopt/workflows/123");
+    let generated = go::emit(&object(vec![]), &stem).expect("emit should succeed");
+    let manifest = file_content(&generated, &stem.join("go.mod"));
+
+    assert!(
+        manifest.contains("module loopt.local/workflows/wf_123"),
+        "{manifest}"
+    );
+}
+
 /// Deliberately non-alphabetical key order (zebra before apple, zzz before
 /// aaa) at both the top level and inside a nested `strategy.matrix` object,
 /// mirroring how GitHub Actions matrix axes must stay in author order.
-/// Native `map[string]interface{}` + `encoding/json` in Go would sort
-/// these alphabetically; the generated `om` ordered-object type must not.
+/// Native `map[string]any` + `encoding/json` in Go would sort these
+/// alphabetically; the SDK's ordered object must not.
 #[test]
 fn nested_mapping_order_is_preserved() {
     let workflow = object(vec![
@@ -248,6 +408,26 @@ fn integers_are_exact_across_the_u64_range() {
 }
 
 #[test]
+fn only_main_go_in_a_go_project_is_an_entrypoint() {
+    let scratch = ScratchDir::new("detect");
+    let project = scratch.path().join(".loopt/workflows/ci");
+    fs::create_dir_all(&project).expect("create project dir");
+    fs::write(project.join("go.mod"), "module ci\n\ngo 1.21\n").expect("write go.mod");
+    fs::write(project.join("main.go"), "package main\n").expect("write main.go");
+    fs::write(project.join("helper.go"), "package main\n").expect("write helper.go");
+
+    assert_eq!(
+        Language::detect_entrypoint(&project.join("main.go")),
+        Some(Language::Go)
+    );
+    assert_eq!(
+        Language::detect_entrypoint(&project.join("helper.go")),
+        None,
+        "helper files inside a Go project must not be separate workflows"
+    );
+}
+
+#[test]
 fn command_rejects_non_go_source() {
     let err = go::command(Path::new(".loopt/workflows/ci.py"))
         .expect_err("command must reject a non-.go path");
@@ -255,8 +435,23 @@ fn command_rejects_non_go_source() {
 }
 
 #[test]
-fn command_runs_go_run_on_the_entrypoint() {
-    let spec = go::command(Path::new(".loopt/workflows/ci.go")).expect("command should succeed");
+fn command_rejects_a_standalone_single_file_source() {
+    let err = go::command(Path::new(".loopt/workflows/ci.go"))
+        .expect_err("command must reject a legacy single-file source");
+    assert!(
+        err.to_string().contains("main.go"),
+        "error should name the project entrypoint: {err}"
+    );
+}
+
+#[test]
+fn command_runs_the_project_directory() {
+    let spec =
+        go::command(Path::new(".loopt/workflows/ci/main.go")).expect("command should succeed");
     assert_eq!(spec.program, "go");
-    assert_eq!(spec.args, vec!["run", ".loopt/workflows/ci.go"]);
+    assert_eq!(
+        spec.args,
+        vec!["-C", ".loopt/workflows/ci", "run", "."],
+        "command must change into the project and run its package"
+    );
 }

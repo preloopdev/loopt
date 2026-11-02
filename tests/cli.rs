@@ -49,6 +49,11 @@ workflow = {
 print(json.dumps(workflow))
 "#;
 
+const GO_SCRATCH_MODULE: &str = r#"module scratch-go
+
+go 1.21
+"#;
+
 const GO_SCRATCH_SOURCE: &str = r#"package main
 
 import (
@@ -193,9 +198,10 @@ fn from_scratch_generation_python() {
 #[test]
 fn from_scratch_generation_go() {
     let repo = TestRepo::new("scratch-go");
-    repo.write(".loopt/workflows/scratch-go.go", GO_SCRATCH_SOURCE);
+    repo.write(".loopt/workflows/scratch-go/go.mod", GO_SCRATCH_MODULE);
+    repo.write(".loopt/workflows/scratch-go/main.go", GO_SCRATCH_SOURCE);
 
-    repo.run(&["gen", ".loopt/workflows/scratch-go.go"])
+    repo.run(&["gen", ".loopt/workflows/scratch-go/main.go"])
         .assert_success();
 
     assert!(repo.exists(".github/workflows/scratch-go.yml"));

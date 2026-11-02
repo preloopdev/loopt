@@ -402,13 +402,13 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
 }
 
 /// `.github/workflows/<stem>.yml` for a source with no manifest entry yet,
-/// i.e. authoring from scratch. Rust's stem is its project directory name;
-/// every other language's stem is its entrypoint's file stem.
+/// i.e. authoring from scratch. Project-based languages (Rust's `main.rs`,
+/// Go's `main.go`) take their stem from the project directory name; every
+/// other language's stem is its entrypoint's file stem.
 fn default_output(source: &Path) -> Result<PathBuf> {
-    let stem = if source.file_name().and_then(|n| n.to_str()) == Some("main.rs") {
-        source.parent().and_then(|dir| dir.file_name())
-    } else {
-        source.file_stem()
+    let stem = match source.file_name().and_then(|n| n.to_str()) {
+        Some("main.rs") | Some("main.go") => source.parent().and_then(|dir| dir.file_name()),
+        _ => source.file_stem(),
     }
     .with_context(|| format!("{}: cannot derive a workflow stem", source.display()))?;
     Ok(PathBuf::from(WORKFLOWS_DIR)

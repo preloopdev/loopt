@@ -88,13 +88,13 @@ pub fn resolve_within(root: &Path, relative: &Path) -> Result<PathBuf> {
 }
 
 /// Project-relative root for vendored, cross-project shared authoring
-/// SDK sources (currently just `.loopt/sdk/rust`, written once by the Rust
-/// language backend and reused -- via a relative `Cargo.toml` dependency --
-/// by every generated Rust workflow project, instead of being duplicated
-/// under each project's own `.loopt/workflows/<name>`). A second boundary
-/// alongside `.loopt/workflows`, not a replacement for it: a language
-/// backend's ordinary per-project files still must stay under
-/// `.loopt/workflows`.
+/// SDK sources (currently `.loopt/sdk/rust` and `.loopt/sdk/go`, written
+/// once by the Rust and Go language backends and reused -- via relative
+/// `Cargo.toml` / `go.mod` dependencies -- by every generated project of
+/// that language, instead of being duplicated under each project's own
+/// `.loopt/workflows/<name>`). A second boundary alongside
+/// `.loopt/workflows`, not a replacement for it: a language backend's
+/// ordinary per-project files still must stay under `.loopt/workflows`.
 pub const SDK_DIR: &str = ".loopt/sdk";
 
 /// Confirm root-relative `path` stays under `root/prefix`, e.g.

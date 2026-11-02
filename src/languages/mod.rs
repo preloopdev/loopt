@@ -19,11 +19,11 @@ pub mod typescript;
 /// and must stay under `.loopt/workflows` (each caller's own `SOURCE_DIR`),
 /// with one carve-out: a vendored, cross-project shared SDK a backend writes
 /// once and reuses across every project of that language (currently the
-/// Rust backend's `.loopt/sdk/rust`, see `src/languages/rust.rs`) may
-/// instead stay under `.loopt/sdk` (`paths::SDK_DIR`). `import`/`init`
-/// tolerate an identical repeat of such a file across multiple documents in
-/// one run; that is the only case where two documents' `files` may share a
-/// `path`.
+/// Rust backend's `.loopt/sdk/rust` and the Go backend's `.loopt/sdk/go`,
+/// see `src/languages/rust.rs` and `src/languages/go.rs`) may instead stay
+/// under `.loopt/sdk` (`paths::SDK_DIR`). `import`/`init` tolerate an
+/// identical repeat of such a file across multiple documents in one run;
+/// that is the only case where two documents' `files` may share a `path`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedFile {
     pub path: PathBuf,
@@ -89,7 +89,8 @@ impl Language {
 
     /// Source file extensions this language's entrypoint may use (without
     /// the leading dot). Rust's entrypoint is always named `main.rs`
-    /// alongside a sibling `Cargo.toml`; see `detect_entrypoint`.
+    /// alongside a sibling `Cargo.toml`, and Go's is always named `main.go`
+    /// alongside a sibling `go.mod`; see `detect_entrypoint`.
     pub fn source_extensions(self) -> &'static [&'static str] {
         match self {
             Language::TypeScript => &["ts"],
@@ -102,18 +103,30 @@ impl Language {
     /// Detect a built-in language from an entrypoint path discovered on
     /// disk, used when `loopt gen` finds new source under
     /// `.loopt/workflows` that is not yet in the manifest.
+    ///
+    /// Project-based languages require their project marker, and only
+    /// their `main` file is an entrypoint: other `.rs`/`.go` files in a
+    /// generated project are ordinary source files of that same project,
+    /// not separate workflows.
     pub fn detect_entrypoint(path: &Path) -> Option<Language> {
-        if path.file_name().and_then(|n| n.to_str()) == Some("main.rs")
+        let file_name = path.file_name().and_then(|n| n.to_str());
+        if file_name == Some("main.rs")
             && path
                 .parent()
                 .is_some_and(|dir| dir.join("Cargo.toml").is_file())
         {
             return Some(Language::Rust);
         }
+        if file_name == Some("main.go")
+            && path
+                .parent()
+                .is_some_and(|dir| dir.join("go.mod").is_file())
+        {
+            return Some(Language::Go);
+        }
         match path.extension().and_then(|ext| ext.to_str()) {
             Some("ts") => Some(Language::TypeScript),
             Some("py") => Some(Language::Python),
-            Some("go") => Some(Language::Go),
             _ => None,
         }
     }

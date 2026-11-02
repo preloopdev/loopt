@@ -101,7 +101,7 @@ fn init_starter_survives_every_built_in_language() {
     // string-literal rules intact, not just the one the other tests use.
     for (language, entrypoint) in [
         ("typescript", ".loopt/workflows/ci.ts"),
-        ("go", ".loopt/workflows/ci.go"),
+        ("go", ".loopt/workflows/ci/main.go"),
         ("rust", ".loopt/workflows/ci/main.rs"),
     ] {
         let repo = TestRepo::new(&format!("init-{language}"));

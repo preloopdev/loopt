@@ -57,32 +57,39 @@ fn temp_dir(label: &str) -> PathBuf {
     dir
 }
 
-/// Run `python::emit` + `python::command` end-to-end: write the generated
-/// module to disk, execute it exactly as `loopt gen` would, and parse the
-/// one JSON object it prints on stdout. Returns the parsed value and the
-/// raw stdout text (the latter for order-sensitive assertions, since
-/// `Value` equality ignores map ordering).
+/// Run `python::emit` + `python::command` end-to-end: write every generated
+/// file (including the vendored `loopt_sdk` package) to disk, execute the
+/// entrypoint exactly as `loopt gen` would, and parse the one JSON object it
+/// prints on stdout. Returns the parsed value and the raw stdout text (the
+/// latter for order-sensitive assertions, since `Value` equality ignores map
+/// ordering).
 fn run_generated(workflow: &Value, stem_rel: &str, label: &str) -> (Value, String) {
     let dir = temp_dir(label);
     let stem = Path::new(stem_rel);
 
     let source = python::emit(workflow, stem).expect("emit should succeed");
-    assert_eq!(
-        source.files.len(),
-        1,
-        "python emit should produce exactly one file, got {:?}",
-        source.files
-    );
-    assert_eq!(source.files[0].path, source.entrypoint);
     assert_eq!(source.entrypoint, stem.with_extension("py"));
+    assert!(
+        source.files.iter().any(|f| f.path == source.entrypoint),
+        "entrypoint must be one of the emitted files"
+    );
+    assert!(
+        source
+            .files
+            .iter()
+            .any(|f| f.path == Path::new(".loopt/sdk/python/loopt_sdk/__init__.py")),
+        "emit must vendor the loopt_sdk package"
+    );
 
-    let file_path = dir.join(&source.entrypoint);
-    if let Some(parent) = file_path.parent() {
-        fs::create_dir_all(parent).expect("create parent dirs for generated source");
+    for file in &source.files {
+        let file_path = dir.join(&file.path);
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).expect("create parent dirs for generated source");
+        }
+        fs::write(&file_path, &file.content).expect("write generated source");
     }
-    fs::write(&file_path, &source.files[0].content).expect("write generated source");
 
-    let cmd = python::command(&file_path).expect("command should succeed");
+    let cmd = python::command(&dir.join(&source.entrypoint)).expect("command should succeed");
     assert_eq!(cmd.program, "python3");
 
     let output = Command::new(&cmd.program)
@@ -216,15 +223,103 @@ fn emit_places_entrypoint_under_stem_with_py_extension() {
     let source = python::emit(&workflow, stem).expect("emit should succeed");
 
     assert_eq!(source.entrypoint, PathBuf::from(".loopt/workflows/ci.py"));
-    assert_eq!(source.files.len(), 1);
-    assert_eq!(source.files[0].path, source.entrypoint);
+    assert!(source.files.iter().any(|f| f.path == source.entrypoint));
+
+    // One generated module plus the vendored loopt_sdk package files; update
+    // this count alongside `python::SDK_FILES`.
+    assert_eq!(source.files.len(), 1 + 5);
+    assert!(source
+        .files
+        .iter()
+        .all(|file| file.path.starts_with(".loopt/workflows")
+            || file.path.starts_with(".loopt/sdk/python")));
+}
+
+#[test]
+fn generated_source_imports_the_vendored_loopt_sdk() {
+    let workflow = json!({"name": "ci"});
+    let stem = Path::new(".loopt/workflows/ci");
+    let source = python::emit(&workflow, stem).expect("emit should succeed");
+
+    let module = source
+        .files
+        .iter()
+        .find(|file| file.path == stem.with_extension("py"))
+        .expect("generated module")
+        .content
+        .as_str();
+
+    // The generated module resolves `.loopt/sdk/python` relative to its own
+    // location instead of requiring `pip install loopt-sdk`.
+    assert!(
+        module.contains("sys.path.insert(0, os.path.join("),
+        "missing sys.path shim:\n{module}"
+    );
+    assert!(
+        module.contains("os.path.dirname(os.path.abspath(__file__))"),
+        "sys.path shim must be relative to __file__:\n{module}"
+    );
+    assert!(
+        module.contains("\"../sdk/python\""),
+        "sys.path shim must point at sdk/python:\n{module}"
+    );
+    assert!(
+        module.contains("from loopt_sdk.emit import print_workflow"),
+        "generated module must import loopt_sdk:\n{module}"
+    );
+    assert!(
+        module.contains("print_workflow(build_workflow())"),
+        "main() must print through the vendored SDK:\n{module}"
+    );
+
+    // The package files the import needs are vendored alongside it.
+    for relative in [
+        "loopt_sdk/__init__.py",
+        "loopt_sdk/core.py",
+        "loopt_sdk/emit.py",
+        "loopt_sdk/errors.py",
+        "loopt_sdk/expr.py",
+    ] {
+        let path = Path::new(".loopt/sdk/python").join(relative);
+        assert!(
+            source.files.iter().any(|file| file.path == path),
+            "missing vendored SDK file {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn nested_action_sources_point_sys_path_at_the_right_depth() {
+    let workflow = json!({"name": "ci"});
+    let stem = Path::new(".loopt/workflows/actions/example/nested/action");
+    let source = python::emit(&workflow, stem).expect("emit should succeed");
+    let module = source
+        .files
+        .iter()
+        .find(|file| file.path == stem.with_extension("py"))
+        .expect("generated module")
+        .content
+        .as_str();
+
+    // `.loopt/workflows/actions/example/nested/action.py` must climb four
+    // directories (nested, example, actions, workflows) to reach `.loopt`.
+    assert!(
+        module.contains("\"../../../../sdk/python\""),
+        "nested action shim has the wrong depth:\n{module}"
+    );
 }
 
 #[test]
 fn generated_source_constructs_real_python_values_not_an_embedded_blob() {
     let workflow = json!({"on": "push", "jobs": {}});
     let source = python::emit(&workflow, Path::new(".loopt/workflows/plain")).unwrap();
-    let content = &source.files[0].content;
+    let content = &source
+        .files
+        .iter()
+        .find(|file| file.path == Path::new(".loopt/workflows/plain.py"))
+        .expect("generated module")
+        .content;
 
     // The workflow is built as actual dict/list literals a user can edit,
     // not embedded as an opaque JSON/YAML string that gets parsed back.
@@ -233,5 +328,5 @@ fn generated_source_constructs_real_python_values_not_an_embedded_blob() {
     assert!(content.contains("'jobs': {}"));
     assert!(!content.contains("json.loads("));
     assert!(!content.contains("yaml.safe_load("));
-    assert!(content.contains("json.dump(workflow, sys.stdout"));
+    assert!(content.contains("print_workflow(build_workflow())"));
 }
