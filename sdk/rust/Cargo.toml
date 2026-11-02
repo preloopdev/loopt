@@ -7,7 +7,6 @@ description = "Rust authoring SDK for GitHub Actions workflows, mirroring sdk/ty
 repository = "https://github.com/preloopdev/loopt"
 keywords = ["github-actions", "ci", "workflow", "sdk"]
 categories = ["development-tools"]
-publish = false
 
 [dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }

@@ -26,7 +26,6 @@ one is published. Set `LOOPT_INSTALL_DIR` to change the destination, or
 `LOOPT_VERSION=v0.1.1` to pin a release. Prebuilt binaries are published for
 macOS arm64 and Linux x86_64.
 
-
 The language you author in must be installed when generating: Node.js 26+,
 Python 3, Go, or Cargo/Rust.
 
@@ -76,223 +75,11 @@ loopt gen --check
 
 `loopt import` leaves the original YAML untouched. `loopt gen` refuses to
 overwrite a workflow edited outside Loopt unless you pass `--force`.
+Composite actions (`action.yml`/`action.yaml` outside `.github/workflows/`)
+import as action metadata the same way.
 
-You can also write source from scratch under `.loopt/workflows/`; `loopt gen`
-discovers it and writes the matching workflow.
-
-`loopt import` also converts composite actions. Any file named `action.yml`
-or `action.yaml` outside `.github/workflows/` is imported as action metadata
-(source under `.loopt/workflows/actions/…`); `loopt gen` writes it back
-byte-for-byte until you edit the source. A file named `action.yml` *inside*
-`.github/workflows/` stays a workflow, matching GitHub's own rule.
-
-In TypeScript, tagged `run` templates keep untrusted values out of shell
-source by moving each interpolation into a step environment variable and
-referencing it with a quoted `"${__LOOPT_RUN_N}"`:
-
-```ts
-run`echo "PR title: ${github.event.pullRequest.title}"`
-```
-
-Strings, numbers, booleans and expressions are accepted; ambiguous quoting,
-command substitution and unsupported shells are rejected up front.
-`run.unsafe` interpolates source directly when you really mean it.
-
-
-### Keep YAML and source in sync
-
-Generated YAML is output, not a second source of truth. `loopt gen --check`
-writes nothing and exits 1 if any workflow is out of date, so run it in CI:
-
-```yaml
-- run: loopt gen --check
-```
-
-Each output is listed as `unchanged`, `stale` (the source changed), `missing`
-(never generated), or `edited` (the YAML was changed by hand). For `edited`
-you choose a direction: `loopt gen --force` regenerates the YAML from source
-and discards the hand edit, while `loopt import` turns the edited YAML back
-into source (it refuses to overwrite source you changed unless you pass
-`--force`).
-
-
-## Action bindings
-
-Typed bindings turn any GitHub Action into a commit-pinned import with
-declared inputs and outputs:
-
-```sh
-loopt actions add actions/checkout@v6
-```
-
-This resolves the ref to a commit SHA through `gh api`, reads the action's
-`action.yml`, and writes `.loopt/actions/checkout.ts` plus an entry in
-`.loopt/actions.lock`. The generated module imports `@loopt/sdk` (override
-for local checkouts with `--sdk-import`); pinned inputs get typed names and
-declared outputs become `StepRef` outputs, so `checkout(...).outputs.headSha`
-type-checks.
-
-```sh
-loopt actions list [--json]
-loopt actions update actions/checkout@main     # re-resolve and re-pin
-loopt actions update checkout --output new-out # patch metadata (also --input-type, --patch[-file])
-loopt actions verify                           # offline: lock + generated files intact
-loopt actions remove checkout
-```
-
-`update` and `remove` refuse to touch a generated file that was edited
-outside Loopt unless `--force` is passed.
-
-## Secrets
-
-```sh
-loopt secrets sync --repo owner/repo --environment prod
-```
-
-Writes **names only** — never values — to `.loopt/secrets.json` (a
-`--context`-compatible lint inventory) and `.loopt/secrets.ts` (typed
-`secrets` accessors for the SDK, `--sdk-import` to override). Repository and
-organization-visible names merge into `available_secrets`; `--environment`
-scopes the per-environment inventory while `known_environments` records
-every environment GitHub returned. Nothing is written unless every API call
-succeeds. `loopt lint` loads `.loopt/secrets.json` automatically, so missing
-secrets become lint findings instead of surprises at runtime.
-
-## Workflow lockfile
-
-```sh
-loopt lock                # write .github/workflows/actions.lock
-loopt lock --verify       # network: fail if a pinned ref moved or ids changed
-loopt lock --verify-local # offline: every uses: has a lockfile entry
-```
-
-`loopt lock` resolves each step-level `uses:` to a full commit SHA plus the
-repository's `owner_id`/`repo_id`, expands composite actions' own `uses:`
-steps transitively, and writes `.github/workflows/actions.lock` — the same
-file and `v0.0.2` format GitHub's `gh-actions-lock` extension and the hosted
-runner enforce, so a lockfile written by one tool verifies under the other.
-Local `./…`, `$/…`, `docker://…` and `${{ }}`-computed `uses:` values cannot
-be pinned to a commit and are reported as notes; reusable-workflow calls
-(`jobs.<id>.uses`) are skipped, matching upstream.
-
-
-## Add a language
-
-There are two extension paths: an out-of-tree plugin (no Loopt changes), or a
-built-in language in this repository.
-
-### Out-of-tree plugin
-
-A plugin is any executable that reads one JSON request on stdin, writes one
-JSON response on stdout, and exits. Loopt runs it with the repository root as
-its working directory; it never goes through a shell. `--plugin` names the
-program and each `--plugin-arg` is passed as a separate argument.
-
-Protocol v1 requests:
-
-```json
-{"version":1,"op":"describe"}
-{"version":1,"op":"emit","params":{"workflow":{"name":"ci"},"stem":".loopt/workflows/ci"}}
-{"version":1,"op":"synth","params":{"source":".loopt/workflows/ci.jsonwf"}}
-```
-
-`describe` reports `{"language":"jsonwf","extensions":["jsonwf"]}`. `emit`
-returns `{"entrypoint":".loopt/workflows/ci.jsonwf","files":[{"path":".loopt/workflows/ci.jsonwf","content":"..."}]}`;
-every path must stay under `.loopt/workflows` and must include `entrypoint`.
-`synth` runs or reads the source itself and returns
-`{"workflow":{...}}`. Wrap successful results as
-`{"status":"ok","version":1,"result":...}`; return
-`{"status":"error","version":1,"message":"..."}` (and optionally a non-zero
-exit) on failure. A protocol-version mismatch is a hard error.
-
-A minimal JSON round-trip plugin:
-
-```python
-#!/usr/bin/env python3
-import json, pathlib, sys
-
-request = json.load(sys.stdin)
-op = request["op"]
-
-def ok(result):
-    print(json.dumps({"status": "ok", "version": 1, "result": result}))
-
-if op == "describe":
-    ok({"language": "jsonwf", "extensions": ["jsonwf"]})
-elif op == "emit":
-    stem = request["params"]["stem"]
-    path = f"{stem}.jsonwf"
-    content = json.dumps(request["params"]["workflow"], indent=2) + "\n"
-    ok({"entrypoint": path, "files": [{"path": path, "content": content}]})
-elif op == "synth":
-    source = pathlib.Path(request["params"]["source"]).read_text()
-    ok({"workflow": json.loads(source)})
-else:
-    print(json.dumps({"status": "error", "version": 1,
-                      "message": f"unknown op {op}"}))
-    sys.exit(1)
-```
-
-Wire it in:
-
-```sh
-chmod +x bin/loopt-jsonwf
-loopt import --language jsonwf --plugin ./bin/loopt-jsonwf
-loopt gen
-```
-
-If the plugin needs arguments, use repeatable `--plugin-arg`:
-
-```sh
-loopt import --language jsonwf --plugin python3 \
-  --plugin-arg ./bin/loopt-jsonwf.py
-```
-
-`loopt gen` reuses the plugin recorded in `.loopt/manifest.json`. Hand-authored
-sources in a custom language need a manifest entry; run `loopt import` once or
-add the `language` and `plugin` fields to the entry.
-
-Java needs no wrapper script and no Loopt change: pass `java` as the plugin
-program and the plugin source as its argument. `examples/java/JavaPlugin.java`
-is a complete JDK-only plugin (JDK 11+):
-
-```sh
-loopt import --language java --plugin java \
-  --plugin-arg examples/java/JavaPlugin.java
-loopt gen
-```
-
-It emits a `.java` entrypoint that prints the workflow JSON, and `synth` runs
-it with `java <source>`. The example deliberately keeps the workflow as an
-embedded JSON string; a production built-in Java emitter would generate
-ordinary Java data structures and a JSON writer instead.
-
-### Built-in language
-
-Add `src/languages/<name>.rs` implementing:
-
-- `emit(workflow, stem) -> GeneratedSource` — produce the editable source file(s).
-- `command(source) -> CommandSpec` — how to execute the entrypoint from the repo root.
-
-Then wire the module into `src/languages/mod.rs`: add it to `Language::ALL` and
-extend `id`, `parse`, `source_extensions`, `detect_entrypoint`, `emit`, and
-`command`. Add round-trip tests under `tests/`. The hidden
-`loopt plugin <language>` subcommand exercises a built-in through the same
-request/response protocol as an external plugin, which makes it useful as a
-reference while implementing one.
-
-### Rust SDK
-
-`sdk/rust` is a `loopt-sdk` crate mirroring `sdk/typescript`: typed `${{ }}`
-expressions (literals, operators, built-in functions, and dynamically
-navigable contexts like `github`/`env`/`secrets`) plus `run`/`uses`/`job`/
-`workflow` constructors that assemble a workflow as an ordered
-`serde_json::Value`, with `JobRef`/`StepRef` typed references to
-`needs.<id>.outputs.<name>` and `steps.<id>.outputs.<name>`. `loopt import
---language rust` vendors it verbatim into every generated project's
-`.loopt/sdk/rust`, so `<project>/Cargo.toml` depends on it with a plain
-relative path and the generated `main.rs` prints through
-`loopt_sdk::emit::print` -- no publish step, no version to keep in sync.
+See [Authoring workflows](docs/authoring-workflows.md) for composite-action
+details, safe `run` templates, and the full source↔YAML sync semantics.
 
 ## Review
 
@@ -300,45 +87,23 @@ relative path and the generated `main.rs` prints through
 loopt lint
 ```
 
-Runs native correctness and security checks on generated workflows. Warnings
-exit 0; errors exit 1. Use `--json` for machine output, `--persona pedantic`
-for stricter policy checks, and `--context inventory.json` to supply known
-runner labels and secret names (never values).
+Runs native correctness and security checks on generated workflows —
+optionally with [shellcheck](https://www.shellcheck.net) on `run:` scripts.
+`loopt gen` runs the same review automatically.
 
-`.loopt/secrets.json` (from `loopt secrets sync`) is loaded automatically as
-the default context; `--context` overrides it.
+See [Lint and security review](docs/lint-and-security.md) for the
+`--persona`/`--context`/`--shellcheck` flags and severity mapping.
 
-`loopt gen` runs the same review automatically; pass `--no-lint` to skip it.
+## Everything else
 
-### Shell scripts
-
-`run:` scripts are also checked with [shellcheck](https://www.shellcheck.net)
-when it is installed. Only `bash` and `sh` scripts are checked: `bash` is the
-default on Linux and macOS runners, `pwsh` on Windows, and `shell:` at step,
-job or workflow level overrides it. `${{ }}` expressions are masked before the
-script is checked, and the codes that conflict with expression syntax (SC1091,
-SC2043, SC2050, SC2154, SC2157, SC2194) are excluded. Findings appear as
-`shellcheck/SC####`; shellcheck's `error`, `warning` and `info`/`style` levels
-map to Loopt's error, warning and info.
-
-```sh
-loopt lint --shellcheck on                       # fail when shellcheck is missing
-loopt lint --shellcheck off                      # disable
-loopt lint --shellcheck-path /opt/bin/shellcheck
-```
-
-The default is `auto`: use shellcheck when it can be run and skip it silently
-otherwise. shellcheck is GPL-3, so Loopt runs it as a separate program and
-never bundles it.
-
-## Layout
-
-```text
-.loopt/
-  manifest.json          source → generated workflow mapping
-  workflows/ci.ts        editable workflow source
-.github/workflows/ci.yml generated; do not edit
-```
+| Topic | Doc |
+|---|---|
+| Typed, commit-pinned action imports (`loopt actions …`) | [Action bindings](docs/action-bindings.md) |
+| Names-only secret inventory (`loopt secrets sync`) | [Secrets](docs/secrets.md) |
+| `uses:` pin enforcement (`loopt lock`) | [Workflow lockfile](docs/workflow-lockfile.md) |
+| Out-of-tree plugin protocol and built-in languages | [Languages and plugins](docs/languages.md) |
+| `@loopt/sdk` (npm) and `loopt-sdk` (crates.io) | [Authoring SDKs](docs/sdks.md) |
+| `.loopt/` layout | [Layout](docs/layout.md) |
 
 ## Test
 

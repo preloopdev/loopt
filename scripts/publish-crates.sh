@@ -12,7 +12,8 @@ for crate in \
   preloop-gha-expressions \
   preloop-gha-authoring \
   preloop-gha-lint \
-  preloop-gha-sec
+  preloop-gha-sec \
+  loopt-sdk
 do
   echo "publish: $crate"
   cargo publish -p "$crate"
