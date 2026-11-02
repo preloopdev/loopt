@@ -25,17 +25,6 @@ one is published. Set `LOOPT_INSTALL_DIR` to change the destination, or
 `LOOPT_VERSION=v0.1.1` to pin a release. Prebuilt binaries are published for
 macOS arm64 and Linux x86_64.
 
-With Cargo:
-
-```sh
-cargo install loopt
-```
-
-Or from a checkout:
-
-```sh
-cargo install --path .
-```
 
 The language you author in must be installed when generating: Node.js 26+,
 Python 3, Go, or Cargo/Rust.
@@ -364,4 +353,4 @@ PRELOOP_FIXTURES=/path/to/fixtures cargo test --test corpus -- --ignored
 
 ## License
 
-MIT. Vendored shared crates retain their upstream license and provenance.
+MIT.
