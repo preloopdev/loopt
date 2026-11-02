@@ -11,7 +11,7 @@ members = [
 
 [package]
 name = "loopt"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "Author GitHub Actions workflows in TypeScript, Python, Go, or Rust, and generate standard workflow YAML from them."
