@@ -166,6 +166,8 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
     let mut seen_outputs: BTreeSet<PathBuf> = BTreeSet::new();
     let mut report: Vec<CheckLine> = Vec::new();
 
+    crate::paths::ensure_gitignore(root)?;
+
     for source in &sources {
         let existing_entry = manifest.entry_for_source(source).cloned();
 
@@ -293,12 +295,38 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
                 }
             }
             _ => {
-                let document = WorkflowDocument::from_value(value.clone()).with_context(|| {
-                    format!(
-                        "{}: generated workflow is not representable",
-                        output.display()
-                    )
-                })?;
+                // No usable file on disk, but the manifest still holds the
+                // last accepted YAML for this workflow. Folding into that
+                // keeps comments, anchors, and scalar styles that a fresh
+                // render from the model cannot reproduce.
+                let accepted = existing_entry
+                    .as_ref()
+                    .map(|entry| entry.last_accepted_yaml.clone())
+                    .filter(|accepted| !accepted.trim().is_empty());
+                let document = match accepted {
+                    Some(accepted) => {
+                        let mut baseline =
+                            WorkflowDocument::parse(&accepted).with_context(|| {
+                                format!(
+                                    "{}: last accepted workflow YAML is not valid",
+                                    output.display()
+                                )
+                            })?;
+                        baseline.replace(value.clone()).with_context(|| {
+                            format!(
+                                "{}: cannot fold the generated workflow into the last accepted YAML",
+                                output.display()
+                            )
+                        })?;
+                        baseline
+                    }
+                    None => WorkflowDocument::from_value(value.clone()).with_context(|| {
+                        format!(
+                            "{}: generated workflow is not representable",
+                            output.display()
+                        )
+                    })?,
+                };
                 let yaml = document.to_yaml().with_context(|| {
                     format!("{}: cannot render workflow YAML", output.display())
                 })?;

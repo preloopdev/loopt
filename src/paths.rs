@@ -200,6 +200,36 @@ pub fn stem_for(yaml_path: &Path) -> Result<String> {
     Ok(stem.to_string())
 }
 
+/// Keep Loopt's build cache out of version control.
+///
+/// `.loopt/.cache` holds compiled SDK artifacts (a Rust `target` directory
+/// reaches ~100 MB). Appending the ignore rule to the repository's
+/// `.gitignore` is idempotent and never rewrites existing content; a missing
+/// `.gitignore` is created with just this rule.
+pub fn ensure_gitignore(root: &Path) -> Result<()> {
+    const RULE: &str = ".loopt/.cache/";
+    let path = root.join(".gitignore");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+    };
+    if existing
+        .lines()
+        .any(|line| line.trim() == RULE || line.trim() == ".loopt/.cache")
+    {
+        return Ok(());
+    }
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(RULE);
+    updated.push('\n');
+    std::fs::write(&path, updated).with_context(|| format!("update {}", path.display()))?;
+    Ok(())
+}
+
 /// Write `content` to `relative` atomically under `root`: write to a sibling
 /// temp file, fsync it, then rename over the destination. Never leaves a
 /// partially written file at the destination.
