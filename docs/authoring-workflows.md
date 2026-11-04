@@ -57,3 +57,19 @@ you choose a direction: `loopt gen --force` regenerates the YAML from source
 and discards the hand edit, while `loopt import` turns the edited YAML back
 into source (it refuses to overwrite source you changed unless you pass
 `--force`).
+
+### What survives regeneration
+
+The authoring model is the workflow's data; formatting is not part of it. When
+`.loopt/manifest.json` still holds the last accepted YAML for an output — the
+normal case — `gen` writes that text back byte-identically, so comments,
+anchors, quote style, and blank lines survive edits and even a deleted output
+file.
+
+Commit `.loopt/manifest.json` alongside the sources. Deleting it (or running
+`gen` in a checkout that lacks it) forces a render from the model alone: every
+value, key, expression, and ordering still round-trips, but comments are gone,
+`&anchor`/`*alias` pairs are expanded inline, flow collections become block
+style, and quotes are normalized. `loopt gen --check` in CI needs the manifest
+for the same reason.
+
