@@ -20,6 +20,7 @@ pub fn run_source(command: &CommandSpec, cwd: &Path) -> Result<serde_json::Value
     let rendered = format!("{} {}", command.program, command.args.join(" "));
     let output = Command::new(&command.program)
         .args(&command.args)
+        .envs(command.env.iter().map(|(key, value)| (key, value)))
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

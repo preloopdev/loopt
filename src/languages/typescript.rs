@@ -77,6 +77,7 @@ pub fn command(source: &Path) -> Result<CommandSpec> {
     Ok(CommandSpec {
         program: "node".to_string(),
         args: vec![path],
+        env: Vec::new(),
     })
 }
 

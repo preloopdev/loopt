@@ -85,14 +85,36 @@ const SDK_FILES: &[(&str, &str)] = &[
 
 /// The vendored `loopt-sdk` sources as `GeneratedFile`s rooted at
 /// `SDK_VENDOR_DIR`, appended to every emitted Rust `GeneratedSource`.
+///
+/// The vendored `Cargo.toml` gains an empty `[workspace]` table so cargo
+/// treats it as its own workspace root. Without it, a generated project
+/// inside a repository whose ancestor manifests are unparsable or targetless
+/// (a partial checkout, a non-cargo root) makes cargo walk upward and fail
+/// with `failed to load manifest for dependency loopt-sdk`.
 fn sdk_files() -> Vec<GeneratedFile> {
     SDK_FILES
         .iter()
-        .map(|(relative, content)| GeneratedFile {
-            path: Path::new(SDK_VENDOR_DIR).join(relative),
-            content: (*content).to_string(),
+        .map(|(relative, content)| {
+            let content = if *relative == "Cargo.toml" {
+                when_standalone_workspace(content)
+            } else {
+                (*content).to_string()
+            };
+            GeneratedFile {
+                path: Path::new(SDK_VENDOR_DIR).join(relative),
+                content,
+            }
         })
         .collect()
+}
+
+/// Appends `[workspace]` to a vendored manifest that does not already
+/// declare one.
+fn when_standalone_workspace(manifest: &str) -> String {
+    if manifest.lines().any(|line| line.trim() == "[workspace]") {
+        return manifest.to_string();
+    }
+    format!("{manifest}\n[workspace]\n")
 }
 
 /// Build the standalone Rust/Cargo source for `workflow`, returning a
@@ -155,6 +177,7 @@ pub fn command(source: &Path) -> Result<CommandSpec> {
             "--bin".to_string(),
             crate_name,
         ],
+        env: Vec::new(),
     })
 }
 

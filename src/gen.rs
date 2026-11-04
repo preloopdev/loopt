@@ -247,28 +247,34 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
         // Refuse to clobber a YAML file edited outside Loopt: only
         // overwrite files that either don't exist yet, or exactly match
         // what Loopt last wrote (or accepted) there.
-        if let Some(on_disk) = &on_disk {
-            let matches_known = existing_entry
+        let matches_known = match &on_disk {
+            Some(on_disk) => existing_entry
                 .as_ref()
-                .is_some_and(|entry| &entry.last_accepted_yaml == on_disk);
-            if !matches_known && !options.force {
-                if options.check {
-                    report.push(CheckLine {
-                        status: Status::EditedOutside,
-                        output,
-                        source: source.clone(),
-                    });
-                    continue;
-                }
-                bail!(
-                    "{}: was edited outside Loopt since the last `loopt gen`; pass --force to overwrite, or `loopt import` it to pick up the edits",
-                    output.display()
-                );
+                .is_some_and(|entry| &entry.last_accepted_yaml == on_disk),
+            // Nothing on disk: nothing to clobber.
+            None => true,
+        };
+        // `--force` on a file edited outside Loopt discards the edit, so the
+        // output must be rendered from the model rather than folded into
+        // (and thereby preserving) the on-disk text.
+        let discard_external_edit = options.force && !matches_known;
+        if !matches_known && !options.force {
+            if options.check {
+                report.push(CheckLine {
+                    status: Status::EditedOutside,
+                    output,
+                    source: source.clone(),
+                });
+                continue;
             }
+            bail!(
+                "{}: was edited outside Loopt since the last `loopt gen`; pass --force to overwrite, or `loopt import` it to pick up the edits",
+                output.display()
+            );
         }
 
         let (yaml, unchanged) = match &on_disk {
-            Some(existing_yaml) => {
+            Some(existing_yaml) if !discard_external_edit => {
                 let mut baseline = WorkflowDocument::parse(existing_yaml)
                     .with_context(|| format!("{}: not valid workflow YAML", output.display()))?;
                 if order_sensitive_eq(baseline.value(), &value) {
@@ -286,7 +292,7 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
                     (yaml, false)
                 }
             }
-            None => {
+            _ => {
                 let document = WorkflowDocument::from_value(value.clone()).with_context(|| {
                     format!(
                         "{}: generated workflow is not representable",

@@ -35,6 +35,7 @@ mod languages {
     pub struct CommandSpec {
         pub program: String,
         pub args: Vec<String>,
+        pub env: Vec<(String, String)>,
     }
 }
 

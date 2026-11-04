@@ -92,12 +92,15 @@ fn check_steps(steps: &[Value], path: &str, findings: &mut Vec<Diagnostic>) {
         let step_path = format!("{path}/{index}");
         let has_run = step.get("run").is_some();
         let has_uses = step.get("uses").is_some();
-        if has_run == has_uses {
+        // GitHub also runs steps that wait on background steps rather than
+        // running a script or calling an action.
+        let is_wait = step.contains_key("wait") || step.contains_key("wait-all");
+        if !is_wait && has_run == has_uses {
             findings.push(error(
                 "preloop/step-required-target",
                 &step_path,
-                "step must define exactly one of `run:` or `uses:`",
-                "a step either runs a script or calls an action",
+                "step must define exactly one of `run:`, `uses:`, `wait:`, or `wait-all:`",
+                "a step either runs a script, calls an action, or waits for background steps",
             ));
         }
         if has_uses {

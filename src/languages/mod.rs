@@ -44,6 +44,10 @@ pub struct GeneratedSource {
 pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
+    /// Extra environment variables for the child, layered on top of the
+    /// inherited environment. Empty for languages that need none.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
 }
 
 /// The four built-in authoring languages.

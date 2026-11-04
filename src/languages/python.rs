@@ -116,6 +116,9 @@ pub fn command(source: &Path) -> Result<CommandSpec> {
     Ok(CommandSpec {
         program: "python3".to_string(),
         args: vec![path],
+        // Keep generated tree clean: running the vendored SDK would otherwise
+        // drop `__pycache__` directories into `.loopt/sdk/python`.
+        env: vec![("PYTHONDONTWRITEBYTECODE".to_string(), "1".to_string())],
     })
 }
 
