@@ -19,6 +19,7 @@
   workflows/             generated output — never edit
     ci.yml
     actions.lock         workflow uses: pins (loopt lock)
+    reusable.lock        reusable-workflow call pins (loopt lock)
 ```
 
 `.loopt/manifest.json` records which source produced each output, the last
