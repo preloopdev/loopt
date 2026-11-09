@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use super::{
-    ContextFunctionCall, ExpressionError, ExpressionReferences, SecretReads,
+    ContextFunctionCall, ContextPath, ExpressionError, ExpressionReferences, SecretReads,
     ast::{BinaryOp, Expr},
     conditions::is_truthy,
     context::Context,
@@ -144,6 +144,56 @@ pub(super) fn collect_context_properties_from_expr(
         Expr::Call { args, .. } => {
             for arg in args {
                 collect_context_properties_from_expr(arg, properties);
+            }
+        }
+    }
+}
+
+/// Collect complete literal context paths from an expression tree.
+///
+/// A [`Expr::Path`] is a context read when its first segment names a context;
+/// later segments are literal properties. A computed index on a literal path
+/// (`steps[format(...)]`) keeps the literal prefix and marks the path dynamic,
+/// and an object filter (`steps.*`) marks it dynamic because the property is
+/// unknowable. Member access on a computed base (`fromJSON(...).name`) has no
+/// context path; only its base expression is visited.
+pub(super) fn collect_context_paths_from_expr(expr: &Expr, paths: &mut Vec<ContextPath>) {
+    match expr {
+        Expr::Path(path) => {
+            let Some((context, properties)) = path.split_first() else {
+                return;
+            };
+            paths.push(ContextPath {
+                context: context.clone(),
+                properties: properties.to_vec(),
+                dynamic: properties.iter().any(|segment| segment == "*"),
+            });
+        }
+        Expr::Literal(_) => {}
+        Expr::UnaryNot(inner) | Expr::MemberAccess { expr: inner, .. } => {
+            collect_context_paths_from_expr(inner, paths);
+        }
+        Expr::Index { base, key } => {
+            if let Expr::Path(path) = base.as_ref() {
+                if let Some((context, properties)) = path.split_first() {
+                    paths.push(ContextPath {
+                        context: context.clone(),
+                        properties: properties.to_vec(),
+                        dynamic: true,
+                    });
+                }
+            } else {
+                collect_context_paths_from_expr(base, paths);
+            }
+            collect_context_paths_from_expr(key, paths);
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_context_paths_from_expr(left, paths);
+            collect_context_paths_from_expr(right, paths);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_context_paths_from_expr(arg, paths);
             }
         }
     }

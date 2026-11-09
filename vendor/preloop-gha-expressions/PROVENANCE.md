@@ -9,5 +9,6 @@ source is redistributed here under the MIT license.
 - Source revision: `3339642ee`
 - Original path: `crates/preloop-gha-expressions/src/`
 - Vendored path: `src/`
-- Changes: `Cargo.toml` and `src/lib.rs` module path only; the Rust sources are
-  byte-for-byte upstream. Upstream tests are not vendored.
+- Changes: `Cargo.toml` and module wiring only, plus loopt-local changes in
+  `src/lib.rs` and `src/evaluator.rs` (`collect_context_paths`); the remaining
+  Rust sources are byte-for-byte upstream. Upstream tests are not vendored.
