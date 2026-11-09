@@ -12,11 +12,49 @@ exit 0; errors exit 1.
 | `--json` | Machine-readable findings |
 | `--persona regular|pedantic|auditor` | Reviewer strictness |
 | `--context inventory.json` | Supply known runner labels and secret names (never values) |
+| `--online` | Fetch GitHub repository evidence for the online audits |
 
 `.loopt/secrets.json` (from `loopt secrets sync`) is loaded automatically as
 the default context; `--context` overrides it.
 
 `loopt gen` runs the same review automatically; pass `--no-lint` to skip it.
+
+## Security audits
+
+Alongside the authoring checks, lint runs zizmor-compatible security audits.
+These include `dangerous-checkout` (an `actions/checkout` step that sets
+`allow-unsafe-pr-checkout`, disabling the action's fork-code protection on
+`pull_request_target` and `workflow_run`), `template-injection`,
+`unpinned-uses`, `artipacked`, `excessive-permissions`, and the repository
+audits described below.
+
+## Online audits (`--online`)
+
+Lint is offline by default. The zizmor-style repository audits need facts
+that only GitHub knows: which commits belong to a repository, which tags and
+branches exist, whether an action's repository is archived, and published
+GitHub Security Advisories. Offline, those checks are reported as
+"unavailable" rather than treated as clean.
+
+`--online` gathers exactly those facts for every repository referenced by a
+`uses:` clause and reruns the audits against them:
+
+```sh
+loopt lint --online
+```
+
+The audits covered are `impostor-commit`, `ref-confusion`,
+`known-vulnerable-actions`, `stale-action-refs` (pedantic persona),
+`ref-version-mismatch`, and `archived-uses`. Gathering uses the same
+authenticated `gh` CLI (`gh api`) as `loopt lock`, so `gh auth login` or
+`GH_TOKEN` is required. Each repository is fetched once. If `gh` is missing or
+not authenticated, `--online` fails with a clear error instead of silently
+skipping the checks; a repository that cannot be read aborts the run rather
+than being reported clean.
+
+`--online` composes with `--persona` and `--json`. GitHub API rate limits
+apply, so very large workflow sets may take a while or need a token with a
+higher limit.
 
 ## Shell scripts (shellcheck)
 

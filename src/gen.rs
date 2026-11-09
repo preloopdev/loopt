@@ -427,6 +427,7 @@ pub fn run(root: &Path, options: GenOptions) -> Result<()> {
             preloop_gha_sec::Persona::Regular,
             &preloop_gha_lint::LintContext::default(),
             &ShellcheckOptions::default(),
+            None,
         ) {
             Ok(reports) => crate::lint::print_human(&reports),
             Err(error) => eprintln!("lint review skipped: {error}"),

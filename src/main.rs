@@ -125,6 +125,12 @@ enum Command {
         /// Path to the shellcheck executable (default: `shellcheck` on `PATH`).
         #[arg(long)]
         shellcheck_path: Option<String>,
+        /// Fetch repository evidence from GitHub for the online audits:
+        /// impostor commits, ref confusion, known-vulnerable actions, stale
+        /// refs, ref/version mismatches, and archived repositories. Requires
+        /// an authenticated `gh`; offline by default.
+        #[arg(long)]
+        online: bool,
     },
     /// Advanced: serve one describe/emit/synth request for a built-in
     /// language over stdin/stdout, then exit. This is the reference a
@@ -207,6 +213,7 @@ fn main() -> Result<()> {
             context,
             shellcheck,
             shellcheck_path,
+            online,
         } => {
             let root = resolve_root(cli.root)?;
             let persona = parse_persona(&persona)?;
@@ -222,6 +229,7 @@ fn main() -> Result<()> {
                         mode: shellcheck,
                         path: shellcheck_path,
                     },
+                    online,
                 },
             )
         }

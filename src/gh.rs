@@ -19,22 +19,85 @@ const DEFAULT_GH_BINARY: &str = "gh";
 /// `raw` requests `application/vnd.github.raw+json`, used for contents-API
 /// file payloads; otherwise the caller gets the JSON envelope.
 pub(crate) fn api(root: &Path, endpoint: &str, raw: bool) -> Result<Vec<u8>> {
+    let output = run_api(root, endpoint, raw, &[])?;
+    if !output.status.success() {
+        return Err(api_failure(endpoint, &output));
+    }
+    Ok(output.stdout)
+}
+
+/// Run `gh api --paginate --slurp <endpoint>` and return every item from
+/// every page, flattening the per-page arrays.
+pub(crate) fn api_paginated(root: &Path, endpoint: &str) -> Result<Vec<JsonValue>> {
+    let output = run_api(root, endpoint, false, &["--paginate", "--slurp"])?;
+    if !output.status.success() {
+        return Err(api_failure(endpoint, &output));
+    }
+    let pages: Vec<JsonValue> = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("parse paginated gh api response for {endpoint}"))?;
+    let mut items = Vec::new();
+    for page in pages {
+        match page {
+            JsonValue::Array(values) => items.extend(values),
+            JsonValue::Null => {}
+            other => items.push(other),
+        }
+    }
+    Ok(items)
+}
+
+/// Like [`api`], but a `404 Not Found` response becomes `Ok(None)` instead
+/// of an error. Used for existence/containment probes where absence is a
+/// meaningful answer rather than a failure.
+pub(crate) fn api_optional(root: &Path, endpoint: &str, raw: bool) -> Result<Option<Vec<u8>>> {
+    let output = run_api(root, endpoint, raw, &[])?;
+    if output.status.success() {
+        return Ok(Some(output.stdout));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("HTTP 404") {
+        return Ok(None);
+    }
+    Err(api_failure(endpoint, &output))
+}
+
+fn run_api(
+    root: &Path,
+    endpoint: &str,
+    raw: bool,
+    extra_args: &[&str],
+) -> Result<std::process::Output> {
     let gh = std::env::var_os("LOOPT_GH").unwrap_or_else(|| OsString::from(DEFAULT_GH_BINARY));
     let mut command = Command::new(gh);
-    command.current_dir(root).arg("api").arg(endpoint);
+    command
+        .current_dir(root)
+        .arg("api")
+        .arg(endpoint)
+        .args(extra_args);
     if raw {
         command.args(["--header", "Accept: application/vnd.github.raw+json"]);
     }
-    let output = command.output().with_context(|| {
-        "run `gh api`; install GitHub CLI and authenticate with `gh auth login`"
-    })?;
-    if !output.status.success() {
-        bail!(
-            "gh api request failed with {}; authenticate with `gh auth login` and check repository/ref",
+    command
+        .output()
+        .with_context(|| "run `gh api`; install GitHub CLI and authenticate with `gh auth login`")
+}
+
+fn api_failure(endpoint: &str, output: &std::process::Output) -> anyhow::Error {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    if detail.is_empty() {
+        anyhow::anyhow!(
+            "gh api {endpoint} failed with {}; authenticate with `gh auth login` and check \
+             repository/ref",
             output.status
-        );
+        )
+    } else {
+        anyhow::anyhow!(
+            "gh api {endpoint} failed with {}: {detail}; authenticate with `gh auth login` and \
+             check repository/ref",
+            output.status
+        )
     }
-    Ok(output.stdout)
 }
 
 /// Resolve `owner/repo@requested_ref` to a full lowercase 40-char commit SHA.
