@@ -40,7 +40,7 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Generate or verify .github/workflows/actions.lock dependency pins.
+    /// Generate or verify .github/workflows/actions.lock and reusable.lock dependency pins.
     Lock {
         /// Options: --verify, --verify-local, --json, optional workflow paths.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

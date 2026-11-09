@@ -30,7 +30,8 @@ pub mod languages;
 pub mod lint;
 /// Repository-fact gathering for `loopt lint --online`.
 pub(crate) mod lint_online;
-/// GitHub workflow dependency lockfile (`.github/workflows/actions.lock`).
+/// GitHub workflow dependency lockfiles (`.github/workflows/actions.lock`
+/// and `reusable.lock`).
 pub mod lock;
 /// `.loopt/manifest.json`: the durable source/output map.
 pub mod manifest;
