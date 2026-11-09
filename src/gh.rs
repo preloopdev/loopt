@@ -154,6 +154,20 @@ pub(crate) fn fetch_file(
     decode_contents_response(&bytes)
 }
 
+/// Fetch a file from `owner/repo/path` at `git_ref` through the contents API.
+///
+/// Unlike [`fetch_file`], the ref may be a branch or tag; it is percent-encoded
+/// for the query string rather than required to be a commit SHA.
+pub(crate) fn fetch_file_at_ref(
+    root: &Path,
+    owner: &str,
+    repo: &str,
+    path: &str,
+    git_ref: &str,
+) -> Result<Vec<u8>> {
+    fetch_file(root, owner, repo, path, &encode_ref(git_ref))
+}
+
 /// Fetch `(owner_id, repo_id)` for `owner/repo`, as recorded in the GitHub
 /// workflow lockfile.
 pub(crate) fn repo_ids(root: &Path, owner: &str, repo: &str) -> Result<(u64, u64)> {

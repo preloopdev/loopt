@@ -15,10 +15,13 @@ mod commands;
 mod conditions;
 mod context;
 mod references;
+mod reusable;
 mod runners;
 mod schema;
 mod structure;
 mod triggers;
+
+pub use reusable::ReusableWorkflows;
 
 /// Importance of a finding, independently of confidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -92,6 +95,20 @@ pub struct LintContext {
 /// Source coordinates are left unknown rather than guessed from YAML text.
 /// Results are ordered by JSON Pointer, rule, producer, then message.
 pub fn lint_workflow(document: &WorkflowDocument, context: &LintContext) -> Vec<Diagnostic> {
+    lint_workflow_with_reusable(document, context, None)
+}
+
+/// Inspect a document with the documents of its reusable-workflow callees.
+///
+/// [`ReusableWorkflows`] supplies callee sources resolved by the caller. A
+/// local call with no supplied source is reported as missing; other
+/// unresolved calls stay unknown. Passing `None` disables callee-dependent
+/// checks, matching [`lint_workflow`].
+pub fn lint_workflow_with_reusable(
+    document: &WorkflowDocument,
+    context: &LintContext,
+    reusable: Option<&ReusableWorkflows>,
+) -> Vec<Diagnostic> {
     let mut findings = Vec::new();
     walk(document.value(), "", Scope::Root, false, &mut findings);
     schema::check(document.value(), &mut findings);
@@ -100,7 +117,8 @@ pub fn lint_workflow(document: &WorkflowDocument, context: &LintContext) -> Vec<
     conditions::check(document.value(), &mut findings);
     structure::check(document.value(), &mut findings);
     triggers::check(document.value(), &mut findings);
-    references::check(document.value(), &mut findings);
+    let call_outputs = reusable::check(document.value(), reusable, &mut findings);
+    references::check(document.value(), &call_outputs, &mut findings);
     context::check(document, context, &mut findings);
     findings.sort_by(|left, right| {
         (&left.path, &left.rule_id, &left.source, &left.message).cmp(&(
