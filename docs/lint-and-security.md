@@ -56,6 +56,23 @@ than being reported clean.
 apply, so very large workflow sets may take a while or need a token with a
 higher limit.
 
+## Reusable workflow calls
+
+Lint checks `jobs.<id>.uses:` calls against the callee's
+`on.workflow_call` declaration. Local callees (`./.github/workflows/x.yml`
+or `$/.github/workflows/x.yml`) are read from the repository root. With
+`--online`, remote callees (`owner/repo/.github/workflows/x.yml@ref`) are
+fetched through `gh api` at the referenced ref; offline, remote calls stay
+unknown and are skipped.
+
+The checks are `reusable-unknown-input`, `reusable-missing-input`,
+`reusable-input-type`, `reusable-unknown-secret`, `reusable-missing-secret`,
+`reusable-unknown-output`, `reusable-not-callable`, and
+`reusable-callee-missing`. Input, secret and output names match
+case-insensitively. Expressions are unknown and skipped, and
+`secrets: inherit` disables secret-name checks. A remote callee that cannot
+be fetched is reported as unavailable rather than clean.
+
 ## Shell scripts (shellcheck)
 
 `run:` scripts are also checked with [shellcheck](https://www.shellcheck.net)

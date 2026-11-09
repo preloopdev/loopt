@@ -6,14 +6,17 @@
 //! need a network call is reported as unavailable rather than treated as
 //! safe.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use preloop_gha_authoring::WorkflowDocument;
-use preloop_gha_lint::{lint_workflow, Diagnostic, LintContext, Severity};
+use preloop_gha_lint::{
+    lint_workflow_with_reusable, Diagnostic, LintContext, ReusableWorkflows, Severity,
+};
 use preloop_gha_sec::{audit, AuditContext, OnlineFacts, Persona, UnavailableCheck};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::lint_online;
 use crate::manifest::Manifest;
@@ -39,6 +42,15 @@ pub struct FileFindings {
     pub unavailable: Vec<UnavailableCheck>,
 }
 
+/// Repository evidence gathered by `--online`: the security audits' fact
+/// snapshot plus the reusable-workflow callee documents fetched at their
+/// referenced refs.
+#[derive(Clone, Debug, Default)]
+pub struct OnlineEvidence {
+    pub facts: OnlineFacts,
+    pub reusable: ReusableWorkflows,
+}
+
 pub fn run(root: &Path, options: LintOptions) -> Result<()> {
     let paths = discover_paths(root, &options.paths)?;
     if paths.is_empty() {
@@ -46,7 +58,8 @@ pub fn run(root: &Path, options: LintOptions) -> Result<()> {
     }
     let context = load_context(root, options.context.as_deref())?;
     let online = if options.online {
-        Some(lint_online::gather(root, &paths)?)
+        let (facts, reusable) = lint_online::gather(root, &paths)?;
+        Some(OnlineEvidence { facts, reusable })
     } else {
         None
     };
@@ -79,31 +92,45 @@ pub fn run(root: &Path, options: LintOptions) -> Result<()> {
 /// Run the shared checks and shellcheck over `paths` (project-relative or
 /// absolute under `root`) without printing or exiting. Used by `loopt gen`
 /// after writing.
+///
+/// Local reusable-workflow callees are read from `root`; remote callees are
+/// resolved only when `online` supplies them.
 pub fn check_paths(
     root: &Path,
     paths: &[PathBuf],
     persona: Persona,
     context: &LintContext,
     shellcheck_options: &ShellcheckOptions,
-    online: Option<&OnlineFacts>,
+    online: Option<&OnlineEvidence>,
 ) -> Result<Vec<FileFindings>> {
     let audit_context = AuditContext {
         persona,
         known_secret_names: context.available_secrets.clone(),
-        online: online.cloned(),
+        online: online.map(|evidence| evidence.facts.clone()),
         ..Default::default()
     };
-    let mut reports = Vec::with_capacity(paths.len());
+
+    let mut documents = Vec::with_capacity(paths.len());
     for path in paths {
         let absolute = root.join(path);
         let text = std::fs::read_to_string(&absolute)
             .with_context(|| format!("read {}", path.display()))?;
         let document =
             WorkflowDocument::parse(&text).with_context(|| format!("parse {}", path.display()))?;
-        let mut findings = lint_workflow(&document, context);
-        let security = audit(&document, &audit_context);
+        documents.push((path, document));
+    }
+
+    let mut reusable = online
+        .map(|evidence| evidence.reusable.clone())
+        .unwrap_or_default();
+    collect_local_callees(root, &documents, &mut reusable.documents);
+
+    let mut reports = Vec::with_capacity(paths.len());
+    for (path, document) in &documents {
+        let mut findings = lint_workflow_with_reusable(document, context, Some(&reusable));
+        let security = audit(document, &audit_context);
         findings.extend(security.findings);
-        findings.extend(shellcheck::check(&document, shellcheck_options)?);
+        findings.extend(shellcheck::check(document, shellcheck_options)?);
         findings.sort_by(|left, right| {
             (&left.path, &left.rule_id, &left.source, &left.message).cmp(&(
                 &right.path,
@@ -113,13 +140,85 @@ pub fn check_paths(
             ))
         });
         findings.dedup();
+        let mut unavailable = security.unavailable;
+        unavailable.extend(reusable_unavailable(
+            document.value(),
+            &reusable.unavailable,
+        ));
         reports.push(FileFindings {
             file: path.display().to_string(),
             findings,
-            unavailable: security.unavailable,
+            unavailable,
         });
     }
     Ok(reports)
+}
+
+/// Read every local reusable-workflow callee referenced by `documents` into
+/// `callees`, keyed by the literal `uses:` value. A file that cannot be read
+/// stays absent, which the lint crate reports as a missing callee.
+fn collect_local_callees(
+    root: &Path,
+    documents: &[(&PathBuf, WorkflowDocument)],
+    callees: &mut BTreeMap<String, String>,
+) {
+    for (_, document) in documents {
+        let Some(jobs) = document.value().get("jobs").and_then(Value::as_object) else {
+            continue;
+        };
+        for job in jobs.values() {
+            let Some(Value::String(uses)) = job.get("uses") else {
+                continue;
+            };
+            if uses.contains("${{") || uses.contains('@') {
+                continue;
+            }
+            if callees.contains_key(uses) {
+                continue;
+            }
+            let Some(relative) = uses.strip_prefix("./").or_else(|| uses.strip_prefix("$/")) else {
+                continue;
+            };
+            if relative.is_empty() {
+                continue;
+            }
+            let Ok(path) = paths::resolve_within(root, Path::new(relative)) else {
+                continue;
+            };
+            if let Ok(source) = std::fs::read_to_string(&path) {
+                callees.insert(uses.clone(), source);
+            }
+        }
+    }
+}
+
+/// Report remote reusable-workflow calls whose callee document the online
+/// resolver could not fetch, so they are unavailable rather than clean.
+fn reusable_unavailable(
+    document: &Value,
+    unresolved: &BTreeMap<String, String>,
+) -> Vec<UnavailableCheck> {
+    let mut checks = Vec::new();
+    let Some(jobs) = document.get("jobs").and_then(Value::as_object) else {
+        return checks;
+    };
+    for (job_id, job) in jobs {
+        let Some(Value::String(uses)) = job.get("uses") else {
+            continue;
+        };
+        let Some(reason) = unresolved.get(uses) else {
+            continue;
+        };
+        checks.push(UnavailableCheck {
+            rule_id: "preloop/reusable-workflow-call".to_owned(),
+            path: format!(
+                "/jobs/{}/uses",
+                job_id.replace('~', "~0").replace('/', "~1")
+            ),
+            reason: reason.clone(),
+        });
+    }
+    checks
 }
 
 pub fn print_human(reports: &[FileFindings]) {
@@ -268,13 +367,17 @@ mod tests {
             ..Default::default()
         };
 
+        let evidence = OnlineEvidence {
+            facts,
+            reusable: ReusableWorkflows::default(),
+        };
         let reports = check_paths(
             &dir,
             &[PathBuf::from("ci.yml")],
             Persona::Regular,
             &LintContext::default(),
             &ShellcheckOptions::default(),
-            Some(&facts),
+            Some(&evidence),
         )
         .expect("lint fixture workflow");
 
@@ -316,6 +419,158 @@ mod tests {
                 .unavailable
                 .iter()
                 .any(|check| check.rule_id == "impostor-commit"),
+            "{:?}",
+            reports[0].unavailable
+        );
+
+        std::fs::remove_dir_all(&dir).expect("remove scratch dir");
+    }
+
+    /// A local callee is read from the lint root and its declaration is
+    /// checked without any network access.
+    #[test]
+    fn local_reusable_callee_is_checked_from_the_repository_root() {
+        let dir = scratch_dir("reusable-local");
+        let workflows = dir.join(".github/workflows");
+        std::fs::create_dir_all(&workflows).expect("create workflows dir");
+        std::fs::write(
+            workflows.join("callee.yml"),
+            "on:\n  workflow_call:\n    inputs:\n      name:\n        type: string\n        required: true\n",
+        )
+        .expect("write callee");
+
+        for uses in [
+            "./.github/workflows/callee.yml",
+            "$/.github/workflows/callee.yml",
+        ] {
+            std::fs::write(
+                dir.join("caller.yml"),
+                format!(
+                    "name: ci\non: push\njobs:\n  call:\n    uses: {uses}\n    with:\n      bogus: x\n"
+                ),
+            )
+            .expect("write caller");
+
+            let reports = check_paths(
+                &dir,
+                &[PathBuf::from("caller.yml")],
+                Persona::Regular,
+                &LintContext::default(),
+                &ShellcheckOptions::default(),
+                None,
+            )
+            .expect("lint caller");
+
+            let rules: Vec<&str> = reports[0]
+                .findings
+                .iter()
+                .map(|finding| finding.rule_id.as_str())
+                .collect();
+            assert!(
+                rules.contains(&"preloop/reusable-unknown-input"),
+                "{uses}: {rules:?}"
+            );
+            assert!(
+                rules.contains(&"preloop/reusable-missing-input"),
+                "{uses}: {rules:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).expect("remove scratch dir");
+    }
+
+    /// A remote callee supplied by the online resolver reaches the same
+    /// checks through `check_paths`, with no network access in the test.
+    #[test]
+    fn fixture_online_callee_is_checked_without_network() {
+        let dir = scratch_dir("reusable-online");
+        let uses = "owner/repo/.github/workflows/callee.yml@v1";
+        std::fs::write(
+            dir.join("caller.yml"),
+            format!(
+                "name: ci\non: push\njobs:\n  call:\n    uses: {uses}\n    with:\n      bogus: x\n"
+            ),
+        )
+        .expect("write caller");
+
+        let evidence = OnlineEvidence {
+            facts: OnlineFacts::default(),
+            reusable: ReusableWorkflows {
+                documents: BTreeMap::from([(
+                    uses.to_owned(),
+                    "on:\n  workflow_call:\n    inputs:\n      name:\n        type: string\n        required: true\n"
+                        .to_owned(),
+                )]),
+                unavailable: BTreeMap::new(),
+            },
+        };
+
+        let reports = check_paths(
+            &dir,
+            &[PathBuf::from("caller.yml")],
+            Persona::Regular,
+            &LintContext::default(),
+            &ShellcheckOptions::default(),
+            Some(&evidence),
+        )
+        .expect("lint caller");
+
+        let rules: Vec<&str> = reports[0]
+            .findings
+            .iter()
+            .map(|finding| finding.rule_id.as_str())
+            .collect();
+        assert!(
+            rules.contains(&"preloop/reusable-unknown-input"),
+            "{rules:?}"
+        );
+        assert!(
+            rules.contains(&"preloop/reusable-missing-input"),
+            "{rules:?}"
+        );
+
+        std::fs::remove_dir_all(&dir).expect("remove scratch dir");
+    }
+
+    /// A remote callee the online resolver could not fetch is reported as
+    /// unavailable, never as clean.
+    #[test]
+    fn unresolved_online_callee_is_unavailable() {
+        let dir = scratch_dir("reusable-unavailable");
+        let uses = "owner/repo/.github/workflows/callee.yml@v1";
+        std::fs::write(
+            dir.join("caller.yml"),
+            format!("name: ci\non: push\njobs:\n  call:\n    uses: {uses}\n"),
+        )
+        .expect("write caller");
+
+        let evidence = OnlineEvidence {
+            facts: OnlineFacts::default(),
+            reusable: ReusableWorkflows {
+                documents: BTreeMap::new(),
+                unavailable: BTreeMap::from([(
+                    uses.to_owned(),
+                    "gh api failed with HTTP 404".to_owned(),
+                )]),
+            },
+        };
+
+        let reports = check_paths(
+            &dir,
+            &[PathBuf::from("caller.yml")],
+            Persona::Regular,
+            &LintContext::default(),
+            &ShellcheckOptions::default(),
+            Some(&evidence),
+        )
+        .expect("lint caller");
+
+        assert!(
+            reports[0]
+                .unavailable
+                .iter()
+                .any(|check| check.rule_id == "preloop/reusable-workflow-call"
+                    && check.path == "/jobs/call/uses"),
             "{:?}",
             reports[0].unavailable
         );

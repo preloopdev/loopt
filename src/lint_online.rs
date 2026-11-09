@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use preloop_gha_authoring::WorkflowDocument;
+use preloop_gha_lint::ReusableWorkflows;
 use preloop_gha_sec::{AdvisoryFact, DatasetProvenance, OnlineFacts, RepoFacts, Severity};
 use serde_json::Value;
 
@@ -32,11 +33,37 @@ struct RepoRequest {
     refs: BTreeSet<String>,
 }
 
-/// Collect the facts every online audit needs for the workflows in `paths`.
-pub(crate) fn gather(root: &Path, paths: &[PathBuf]) -> Result<OnlineFacts> {
-    let requests = collect_repositories(root, paths)?;
+/// A remote reusable-workflow call: `owner/repo/path/to/workflow.yml@ref`.
+struct RemoteCall<'a> {
+    owner: &'a str,
+    repo: &'a str,
+    path: &'a str,
+    git_ref: &'a str,
+}
+
+/// Collect the facts every online audit needs for the workflows in `paths`,
+/// plus the callee documents of remote reusable-workflow calls.
+///
+/// Callee fetches that fail are recorded in [`ReusableWorkflows::unavailable`]
+/// rather than aborting the run: the caller reports them as unavailable, never
+/// as clean.
+pub(crate) fn gather(root: &Path, paths: &[PathBuf]) -> Result<(OnlineFacts, ReusableWorkflows)> {
+    let (requests, calls) = collect_repositories(root, paths)?;
+
+    let mut reusable = ReusableWorkflows::default();
+    for uses in calls {
+        match fetch_reusable(root, &uses) {
+            Ok(source) => {
+                reusable.documents.insert(uses, source);
+            }
+            Err(error) => {
+                reusable.unavailable.insert(uses, format!("{error:#}"));
+            }
+        }
+    }
+
     if requests.is_empty() {
-        return Ok(OnlineFacts::default());
+        return Ok((OnlineFacts::default(), reusable));
     }
 
     let mut repos = BTreeMap::new();
@@ -46,26 +73,33 @@ pub(crate) fn gather(root: &Path, paths: &[PathBuf]) -> Result<OnlineFacts> {
         repos.insert(key, facts);
     }
 
-    Ok(OnlineFacts {
-        provenance: vec![
-            DatasetProvenance {
-                dataset: "refs".to_owned(),
-                source: "GitHub REST API via gh".to_owned(),
-                fetched_at: None,
-            },
-            DatasetProvenance {
-                dataset: "advisories".to_owned(),
-                source: "GitHub global security advisories via gh".to_owned(),
-                fetched_at: None,
-            },
-        ],
-        config: Default::default(),
-        repos,
-    })
+    Ok((
+        OnlineFacts {
+            provenance: vec![
+                DatasetProvenance {
+                    dataset: "refs".to_owned(),
+                    source: "GitHub REST API via gh".to_owned(),
+                    fetched_at: None,
+                },
+                DatasetProvenance {
+                    dataset: "advisories".to_owned(),
+                    source: "GitHub global security advisories via gh".to_owned(),
+                    fetched_at: None,
+                },
+            ],
+            config: Default::default(),
+            repos,
+        },
+        reusable,
+    ))
 }
 
-fn collect_repositories(root: &Path, paths: &[PathBuf]) -> Result<BTreeMap<String, RepoRequest>> {
+fn collect_repositories(
+    root: &Path,
+    paths: &[PathBuf],
+) -> Result<(BTreeMap<String, RepoRequest>, BTreeSet<String>)> {
     let mut requests: BTreeMap<String, RepoRequest> = BTreeMap::new();
+    let mut calls = BTreeSet::new();
     for path in paths {
         let absolute = root.join(path);
         let text = std::fs::read_to_string(&absolute)
@@ -73,8 +107,73 @@ fn collect_repositories(root: &Path, paths: &[PathBuf]) -> Result<BTreeMap<Strin
         let document =
             WorkflowDocument::parse(&text).with_context(|| format!("parse {}", path.display()))?;
         collect_document(document.value(), &mut requests);
+        collect_reusable_calls(document.value(), &mut calls);
     }
-    Ok(requests)
+    Ok((requests, calls))
+}
+
+/// Record remote reusable-workflow calls (job-level `uses:`) for callee
+/// fetching. Local calls are resolved from the repository by `loopt lint`.
+fn collect_reusable_calls(doc: &Value, calls: &mut BTreeSet<String>) {
+    let Some(jobs) = doc.get("jobs").and_then(Value::as_object) else {
+        return;
+    };
+    for job in jobs.values() {
+        if is_disabled(job) {
+            continue;
+        }
+        let Some(Value::String(uses)) = job.get("uses") else {
+            continue;
+        };
+        if parse_remote_call(uses).is_some() {
+            calls.insert(uses.clone());
+        }
+    }
+}
+
+fn parse_remote_call(raw: &str) -> Option<RemoteCall<'_>> {
+    if raw.contains("${{") {
+        return None;
+    }
+    let (reference, git_ref) = raw.rsplit_once('@')?;
+    if reference.starts_with("./")
+        || reference.starts_with("../")
+        || reference.starts_with('/')
+        || reference.starts_with("$/")
+        || reference.starts_with("docker://")
+        || reference == "."
+    {
+        return None;
+    }
+    let mut components = reference.split('/');
+    let owner = components.next()?;
+    let repo = components.next()?;
+    let workflow: Vec<&str> = components.collect();
+    if workflow.is_empty()
+        || !valid_repo_component(owner)
+        || !valid_repo_component(repo)
+        || workflow
+            .iter()
+            .any(|component| component.is_empty() || matches!(*component, "." | ".."))
+        || git_ref.is_empty()
+        || gh::validate_ref(git_ref).is_err()
+    {
+        return None;
+    }
+    let path_start = owner.len() + 1 + repo.len() + 1;
+    Some(RemoteCall {
+        owner,
+        repo,
+        path: &reference[path_start..],
+        git_ref,
+    })
+}
+
+fn fetch_reusable(root: &Path, uses: &str) -> Result<String> {
+    let call = parse_remote_call(uses)
+        .with_context(|| format!("`{uses}` is not a remote reusable workflow call"))?;
+    let bytes = gh::fetch_file_at_ref(root, call.owner, call.repo, call.path, call.git_ref)?;
+    String::from_utf8(bytes).with_context(|| format!("{uses}: callee workflow is not UTF-8"))
 }
 
 fn collect_document(doc: &Value, requests: &mut BTreeMap<String, RepoRequest>) {
@@ -537,6 +636,50 @@ mod tests {
             }
         });
         assert!(collect(&doc).is_empty());
+    }
+
+    #[test]
+    fn collect_reusable_calls_keeps_only_remote_workflow_calls() {
+        let doc = json!({
+            "jobs": {
+                "remote": {
+                    "uses": "preloopdev/pullfrog/.github/workflows/ci.yml@v1"
+                },
+                "local": {
+                    "uses": "./.github/workflows/callee.yml"
+                },
+                "dynamic": {
+                    "uses": "${{ matrix.workflow }}"
+                },
+                "off": {
+                    "if": false,
+                    "uses": "preloopdev/pullfrog/.github/workflows/ci.yml@v1"
+                },
+                "action": {
+                    "steps": [{ "uses": "actions/checkout@v4" }]
+                }
+            }
+        });
+        let mut calls = BTreeSet::new();
+        collect_reusable_calls(&doc, &mut calls);
+        assert_eq!(
+            calls,
+            BTreeSet::from(["preloopdev/pullfrog/.github/workflows/ci.yml@v1".to_owned()])
+        );
+    }
+
+    #[test]
+    fn parse_remote_call_accepts_owner_repo_path_at_ref() {
+        let call =
+            parse_remote_call("owner/repo/.github/workflows/ci.yml@v1").expect("remote call");
+        assert_eq!(call.owner, "owner");
+        assert_eq!(call.repo, "repo");
+        assert_eq!(call.path, ".github/workflows/ci.yml");
+        assert_eq!(call.git_ref, "v1");
+        assert!(parse_remote_call("./.github/workflows/ci.yml").is_none());
+        assert!(parse_remote_call("owner/repo@v1").is_none());
+        assert!(parse_remote_call("owner/repo/../ci.yml@v1").is_none());
+        assert!(parse_remote_call("owner/repo/.github/workflows/ci.yml@").is_none());
     }
 
     #[test]

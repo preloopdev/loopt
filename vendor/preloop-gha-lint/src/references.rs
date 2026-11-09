@@ -128,8 +128,12 @@ const JOB_WITHOUT_MATRIX: &[&str] = &["github", "inputs", "needs", "vars"];
 const WORKFLOW_ENV: &[&str] = &["github", "inputs", "secrets", "vars"];
 const WORKFLOW_SCALAR: &[&str] = &["github", "inputs", "vars"];
 
-pub(crate) fn check(document: &Value, findings: &mut Vec<Diagnostic>) {
-    let index = Index::new(document);
+pub(crate) fn check(
+    document: &Value,
+    reusable_outputs: &BTreeMap<String, Option<BTreeSet<String>>>,
+    findings: &mut Vec<Diagnostic>,
+) {
+    let index = Index::new(document, reusable_outputs);
     walk(document, "", None, None, false, false, &index, findings);
 }
 
@@ -142,8 +146,11 @@ struct JobFacts {
     /// Jobs named by `needs:`; `None` means the list is dynamic.
     needs: Option<BTreeSet<String>>,
     matrix: MatrixFacts,
-    /// Declared `outputs:` names; `None` means absent or dynamic.
+    /// Declared `outputs:` names; `None` means absent or dynamic. For a
+    /// reusable-workflow call job, this is the callee's declared output set.
     outputs: Option<BTreeSet<String>>,
+    /// Whether the job calls a reusable workflow.
+    call: bool,
 }
 
 struct MatrixFacts {
@@ -161,12 +168,18 @@ struct Index {
 }
 
 impl Index {
-    fn new(document: &Value) -> Self {
+    fn new(
+        document: &Value,
+        reusable_outputs: &BTreeMap<String, Option<BTreeSet<String>>>,
+    ) -> Self {
         let mut jobs = BTreeMap::new();
         if let Some(object) = document.get("jobs").and_then(Value::as_object) {
             for (id, job) in object {
                 if let Some(job) = job.as_object() {
-                    jobs.insert(id.to_ascii_lowercase(), JobFacts::new(id, job));
+                    jobs.insert(
+                        id.to_ascii_lowercase(),
+                        JobFacts::new(id, job, reusable_outputs),
+                    );
                 }
             }
         }
@@ -178,13 +191,22 @@ impl Index {
 }
 
 impl JobFacts {
-    fn new(id: &str, job: &serde_json::Map<String, Value>) -> Self {
+    fn new(
+        id: &str,
+        job: &serde_json::Map<String, Value>,
+        reusable_outputs: &BTreeMap<String, Option<BTreeSet<String>>>,
+    ) -> Self {
+        let (outputs, call) = match reusable_outputs.get(&id.to_ascii_lowercase()) {
+            Some(outputs) => (outputs.clone(), true),
+            None => (outputs(job.get("outputs")), false),
+        };
         Self {
             id: id.to_owned(),
             steps: step_ids(job.get("steps")),
             needs: needs(job.get("needs")),
             matrix: matrix(job),
-            outputs: outputs(job.get("outputs")),
+            outputs,
+            call,
         }
     }
 }
@@ -559,21 +581,31 @@ fn check_needs_reference(
     }
     if property(path, 1).is_some_and(|segment| segment.eq_ignore_ascii_case("outputs"))
         && let Some(output) = property(path, 2)
-        && let Some(outputs) = index
-            .jobs
-            .get(&need)
-            .and_then(|needed| needed.outputs.as_ref())
+        && let Some(needed) = index.jobs.get(&need)
+        && let Some(outputs) = needed.outputs.as_ref()
         && !outputs.contains(&output.to_ascii_lowercase())
     {
-        findings.push(error(
-            "preloop/undefined-needs-reference",
-            pointer,
-            format!(
-                "job `{}` reads output `{output}` from `needs.{need}`, but job `{need}` declares no such output",
-                job.id
-            ),
-            "read a declared output, or add it to the job's `outputs:` mapping",
-        ));
+        if needed.call {
+            findings.push(error(
+                "preloop/reusable-unknown-output",
+                pointer,
+                format!(
+                    "job `{}` reads output `{output}` from `needs.{need}`, but the called reusable workflow declares no such output",
+                    job.id
+                ),
+                "read an output declared under `on.workflow_call.outputs` in the called workflow",
+            ));
+        } else {
+            findings.push(error(
+                "preloop/undefined-needs-reference",
+                pointer,
+                format!(
+                    "job `{}` reads output `{output}` from `needs.{need}`, but job `{need}` declares no such output",
+                    job.id
+                ),
+                "read a declared output, or add it to the job's `outputs:` mapping",
+            ));
+        }
     }
 }
 
