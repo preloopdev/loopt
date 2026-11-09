@@ -31,7 +31,11 @@ const workflow = {
           name: "Clippy",
           run: "cargo clippy --locked --all-targets -- -D warnings",
         },
-        { name: "Test", run: "cargo test --locked --lib --tests" },
+        // The vendored expressions crate's tests need proptest, which loopt does not depend on.
+        {
+          name: "Test",
+          run: "cargo test --locked --workspace --exclude preloop-gha-expressions --lib --tests",
+        },
         { name: "Build", run: "cargo build --locked" },
         {
           name: "Language toolchains",
