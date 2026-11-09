@@ -28,6 +28,8 @@ pub mod init;
 pub mod languages;
 /// `loopt lint`: native correctness and security checks.
 pub mod lint;
+/// Repository-fact gathering for `loopt lint --online`.
+pub(crate) mod lint_online;
 /// GitHub workflow dependency lockfile (`.github/workflows/actions.lock`).
 pub mod lock;
 /// `.loopt/manifest.json`: the durable source/output map.

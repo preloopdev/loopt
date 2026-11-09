@@ -9,8 +9,9 @@ source is redistributed here under the MIT license.
 - Source revision: `3339642ee`
 - Original path: `crates/preloop-gha-sec/src/`
 - Vendored path: `src/`
-- Changes: `Cargo.toml` and path dependencies only; the Rust sources are
-  byte-for-byte upstream. Upstream tests are not vendored.
+- Changes: `Cargo.toml` and path dependencies only, plus loopt-local source
+  changes (`dangerous-checkout` audit in `src/checkout.rs` and its registration);
+  the remaining Rust sources are upstream. Upstream tests are not vendored.
 
 The audit rules are an independent MIT implementation informed by the public
 zizmor audit documentation and fixtures; zizmor is not linked, invoked, or

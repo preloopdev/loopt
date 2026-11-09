@@ -12,9 +12,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use preloop_gha_authoring::WorkflowDocument;
 use preloop_gha_lint::{lint_workflow, Diagnostic, LintContext, Severity};
-use preloop_gha_sec::{audit, AuditContext, Persona, UnavailableCheck};
+use preloop_gha_sec::{audit, AuditContext, OnlineFacts, Persona, UnavailableCheck};
 use serde::Serialize;
 
+use crate::lint_online;
 use crate::manifest::Manifest;
 use crate::paths;
 use crate::shellcheck::{self, ShellcheckOptions};
@@ -27,6 +28,8 @@ pub struct LintOptions {
     pub persona: Persona,
     pub context: Option<PathBuf>,
     pub shellcheck: ShellcheckOptions,
+    /// Gather GitHub repository facts and run the online audits.
+    pub online: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,7 +45,19 @@ pub fn run(root: &Path, options: LintOptions) -> Result<()> {
         bail!("no workflow YAML to lint (pass paths, or generate workflows first)");
     }
     let context = load_context(root, options.context.as_deref())?;
-    let reports = check_paths(root, &paths, options.persona, &context, &options.shellcheck)?;
+    let online = if options.online {
+        Some(lint_online::gather(root, &paths)?)
+    } else {
+        None
+    };
+    let reports = check_paths(
+        root,
+        &paths,
+        options.persona,
+        &context,
+        &options.shellcheck,
+        online.as_ref(),
+    )?;
 
     if options.json {
         println!("{}", serde_json::to_string_pretty(&reports)?);
@@ -70,7 +85,14 @@ pub fn check_paths(
     persona: Persona,
     context: &LintContext,
     shellcheck_options: &ShellcheckOptions,
+    online: Option<&OnlineFacts>,
 ) -> Result<Vec<FileFindings>> {
+    let audit_context = AuditContext {
+        persona,
+        known_secret_names: context.available_secrets.clone(),
+        online: online.cloned(),
+        ..Default::default()
+    };
     let mut reports = Vec::with_capacity(paths.len());
     for path in paths {
         let absolute = root.join(path);
@@ -79,14 +101,7 @@ pub fn check_paths(
         let document =
             WorkflowDocument::parse(&text).with_context(|| format!("parse {}", path.display()))?;
         let mut findings = lint_workflow(&document, context);
-        let security = audit(
-            &document,
-            &AuditContext {
-                persona,
-                known_secret_names: context.available_secrets.clone(),
-                ..Default::default()
-            },
-        );
+        let security = audit(&document, &audit_context);
         findings.extend(security.findings);
         findings.extend(shellcheck::check(&document, shellcheck_options)?);
         findings.sort_by(|left, right| {
@@ -130,7 +145,8 @@ pub fn print_human(reports: &[FileFindings]) {
         }
         if !report.unavailable.is_empty() {
             eprintln!(
-                "{}: {} security check(s) need repository evidence and were not run",
+                "{}: {} security check(s) need repository evidence and were not run \
+                 (rerun with --online to fetch it)",
                 report.file,
                 report.unavailable.len()
             );
@@ -199,4 +215,111 @@ fn discover_paths(root: &Path, explicit: &[PathBuf]) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(found.into_iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use preloop_gha_sec::{OnlineFacts, RepoFacts};
+
+    use super::*;
+
+    const IMPOSTOR: &str = "c7d749a2d57b4b375d1ebcd17cfbfb60c676f18e";
+
+    fn scratch_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "loopt-lint-online-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    fn workflow_with_impostor() -> String {
+        format!(
+            "name: ci\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@{IMPOSTOR}\n"
+        )
+    }
+
+    /// Fixture facts must flow from `check_paths` into the online audits with
+    /// no network access: the impostor finding is produced and nothing is
+    /// reported as unavailable.
+    #[test]
+    fn fixture_online_facts_drive_audits_without_network() {
+        let dir = scratch_dir("fixture");
+        let workflow = dir.join("ci.yml");
+        std::fs::write(&workflow, workflow_with_impostor()).expect("write workflow");
+
+        let facts = OnlineFacts {
+            repos: BTreeMap::from([(
+                "actions/checkout".to_owned(),
+                RepoFacts {
+                    commit_membership: BTreeMap::from([(IMPOSTOR.to_owned(), false)]),
+                    archived: Some(false),
+                    advisories: Some(Vec::new()),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        let reports = check_paths(
+            &dir,
+            &[PathBuf::from("ci.yml")],
+            Persona::Regular,
+            &LintContext::default(),
+            &ShellcheckOptions::default(),
+            Some(&facts),
+        )
+        .expect("lint fixture workflow");
+
+        assert!(
+            reports[0].unavailable.is_empty(),
+            "{:?}",
+            reports[0].unavailable
+        );
+        let impostor = reports[0]
+            .findings
+            .iter()
+            .find(|finding| finding.rule_id == "impostor-commit")
+            .expect("expected impostor-commit finding");
+        assert_eq!(impostor.severity, Severity::Error);
+
+        std::fs::remove_dir_all(&dir).expect("remove scratch dir");
+    }
+
+    /// Without a snapshot the same workflow is unknown, not clean: the audit
+    /// stays unavailable, which is the offline default's contract.
+    #[test]
+    fn offline_without_facts_reports_unavailable() {
+        let dir = scratch_dir("offline");
+        let workflow = dir.join("ci.yml");
+        std::fs::write(&workflow, workflow_with_impostor()).expect("write workflow");
+
+        let reports = check_paths(
+            &dir,
+            &[PathBuf::from("ci.yml")],
+            Persona::Regular,
+            &LintContext::default(),
+            &ShellcheckOptions::default(),
+            None,
+        )
+        .expect("lint fixture workflow");
+
+        assert!(
+            reports[0]
+                .unavailable
+                .iter()
+                .any(|check| check.rule_id == "impostor-commit"),
+            "{:?}",
+            reports[0].unavailable
+        );
+
+        std::fs::remove_dir_all(&dir).expect("remove scratch dir");
+    }
 }

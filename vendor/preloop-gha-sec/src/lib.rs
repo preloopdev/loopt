@@ -24,6 +24,8 @@
 //!   `typosquat-uses`, `forbidden-uses`, `obfuscation`).
 //! - `policy` — permissions/configuration audits (e.g.
 //!   `excessive-permissions`, `self-hosted-runner`, `insecure-commands`).
+//! - `checkout` — `dangerous-checkout`: `actions/checkout` steps that
+//!   disable the action's fork-checkout protection.
 //! - `online` — audits whose ground truth depends on pre-fetched repository
 //!   facts: `impostor-commit`, `ref-confusion`, `known-vulnerable-actions`,
 //!   `stale-action-refs`, `ref-version-mismatch`, `archived-uses`.
@@ -35,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 pub use preloop_gha_lint::{Confidence, Diagnostic, Severity};
 
+mod checkout;
 mod online;
 mod policy;
 mod secrets;
@@ -131,6 +134,7 @@ pub fn audit(document: &WorkflowDocument, context: &AuditContext) -> AuditReport
     secrets::check(doc, context, &mut findings);
     supply::check(doc, context, &mut findings);
     policy::check(doc, document.source(), context, &mut findings);
+    checkout::check(doc, context, &mut findings);
     online::check(doc, context, &mut findings, &mut unavailable);
 
     findings.sort_by(|a, b| {
