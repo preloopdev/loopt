@@ -11,8 +11,12 @@ use preloop_gha_expressions::{collect_secret_reads, validate_expression};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod commands;
+mod conditions;
 mod context;
 mod references;
+mod runners;
+mod schema;
 mod structure;
 mod triggers;
 
@@ -90,6 +94,10 @@ pub struct LintContext {
 pub fn lint_workflow(document: &WorkflowDocument, context: &LintContext) -> Vec<Diagnostic> {
     let mut findings = Vec::new();
     walk(document.value(), "", Scope::Root, false, &mut findings);
+    schema::check(document.value(), &mut findings);
+    runners::check(document.value(), context, &mut findings);
+    commands::check(document.value(), &mut findings);
+    conditions::check(document.value(), &mut findings);
     structure::check(document.value(), &mut findings);
     triggers::check(document.value(), &mut findings);
     references::check(document.value(), &mut findings);

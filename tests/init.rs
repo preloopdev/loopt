@@ -25,12 +25,21 @@ fn init_creates_source_manifest_and_yaml_with_no_drift_and_no_findings() {
     repo.run(&["gen", "--check"]).assert_success();
 
     // ...and the starter handed to every new user is clean under our own lint.
+    // `ubuntu-latest` is deliberate and only produces the informational
+    // floating-image advisory, so the starter must have no warning or error.
     let lint = repo.run(&["lint", "--json"]);
     lint.assert_success();
     let reports: serde_json::Value =
         serde_json::from_str(&lint.stdout).expect("`lint --json` prints JSON");
     let findings = reports[0]["findings"].as_array().expect("findings array");
-    assert!(findings.is_empty(), "starter must lint clean: {findings:?}");
+    let actionable: Vec<&serde_json::Value> = findings
+        .iter()
+        .filter(|finding| finding["severity"] != "info")
+        .collect();
+    assert!(
+        actionable.is_empty(),
+        "starter must lint clean: {actionable:?}"
+    );
 }
 
 #[test]
