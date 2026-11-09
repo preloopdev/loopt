@@ -43,6 +43,9 @@ on: push
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [linux]
     steps:
       - run: echo "${{ github.sha }}"
       - run: echo '${{ matrix.os }}'

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod context;
+mod references;
 mod structure;
 mod triggers;
 
@@ -91,6 +92,7 @@ pub fn lint_workflow(document: &WorkflowDocument, context: &LintContext) -> Vec<
     walk(document.value(), "", Scope::Root, false, &mut findings);
     structure::check(document.value(), &mut findings);
     triggers::check(document.value(), &mut findings);
+    references::check(document.value(), &mut findings);
     context::check(document, context, &mut findings);
     findings.sort_by(|left, right| {
         (&left.path, &left.rule_id, &left.source, &left.message).cmp(&(

@@ -16,8 +16,9 @@ pub use conditions::{contains_status_check_function, effective_condition, is_tru
 pub use context::Context;
 
 use evaluator::{
-    EvalBudget, collect_context_properties_from_expr, collect_expression_references_from_expr,
-    collect_secret_reads_from_expr, eval, validate_function_calls,
+    EvalBudget, collect_context_paths_from_expr, collect_context_properties_from_expr,
+    collect_expression_references_from_expr, collect_secret_reads_from_expr, eval,
+    validate_function_calls,
 };
 use expr_parser::Parser;
 use lexer::Lexer;
@@ -197,6 +198,34 @@ pub fn collect_context_properties(
     let mut properties = std::collections::BTreeMap::new();
     collect_context_properties_from_expr(&expr, &mut properties);
     Ok(properties)
+}
+
+/// One literal context path read by an expression, e.g.
+/// `steps.build.outputs.tag` or `matrix.os`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextPath {
+    /// Context name as written (the first path segment).
+    pub context: String,
+    /// Property segments after the context, as written. `*` marks an object
+    /// filter such as `steps.*.outputs`.
+    pub properties: Vec<String>,
+    /// A suffix is computed (`steps[format(...)]`, `steps.*`), so properties
+    /// beyond the literal prefix are not statically knowable.
+    pub dynamic: bool,
+}
+
+/// Collect the literal context paths one expression reads.
+///
+/// Unlike [`collect_context_properties`], this reports the complete literal
+/// path and marks computed suffixes, so a caller can validate references such
+/// as `steps.<id>` or `needs.<job>.outputs.<name>`. Member access on a computed
+/// value (`fromJSON(...).name`) is not a context path and is not reported.
+pub fn collect_context_paths(input: &str) -> Result<Vec<ContextPath>, ExpressionError> {
+    let trimmed = trim_expression_markers(input);
+    let expr = parse_cached(trimmed)?;
+    let mut paths = Vec::new();
+    collect_context_paths_from_expr(&expr, &mut paths);
+    Ok(paths)
 }
 
 /// `secrets.*` access found in one expression.
