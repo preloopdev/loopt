@@ -15,7 +15,11 @@ const workflow = {
   jobs: {
     test: {
       name: "test",
-      "runs-on": ["self-hosted", "preloop-cpane"],
+      "runs-on": [
+        "self-hosted",
+        "preloop-cpane",
+        "preloop-ubuntu-24.04-4vcpu-16gb",
+      ],
       "timeout-minutes": 30,
       steps: [
         {
