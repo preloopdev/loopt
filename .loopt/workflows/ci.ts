@@ -18,7 +18,7 @@ const workflow = {
       "runs-on": [
         "self-hosted",
         "preloop-cpane",
-        "preloop-ubuntu-24.04-4vcpu-16gb",
+        "preloop-ubuntu-24.04-2vcpu-4gb",
       ],
       "timeout-minutes": 30,
       steps: [
